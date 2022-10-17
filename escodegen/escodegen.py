@@ -301,49 +301,45 @@ class SimpleObj:
     def fromDict(obj):
         import json as JSON
         return SimpleObj.fromJsonString(JSON.dumps(obj))
-
-class DefaultOptionsFormatIndent(SimpleObj):
-    style = '    '
-    base = 0
-    adjustMultilineComment = False
-
-class DefaultOptionsFormat(SimpleObj):
-    indent = DefaultOptionsFormatIndent()
-    newline = '\n'
-    space = ' '
-    json = False
-    renumber = False
-    hexadecimal = False
-    quotes = 'single'
-    escapeless = False
-    compact = False
-    parentheses = True
-    semicolons = True
-    safeConcatenation = False
-    preserveBlankLines = False
-
-class DefaultOptionsMoz(SimpleObj):
-    comprehensionExpressionStartsWithAssignment = False,
-    starlessGenerator = False
-
-class DefaultOptions(SimpleObj):
-    indent = None
-    base = None
-    parse = None
-    comment = False
-    format = DefaultOptionsFormat()
-    moz = DefaultOptionsMoz()
-    sourceMap = None
-    sourceMapRoot = None
-    sourceMapWithCode = False
-    directive = False
-    raw = True
-    verbatim = None
-    sourceCode = None
     
 def getDefaultOptions():
     # default options
-    return DefaultOptions()
+    return SimpleObj({
+        'indent': None,
+        'base': None,
+        'parse': None,
+        'comment': False,
+        'format': SimpleObj({
+            'indent': SimpleObj({
+                'style': '    ',
+                'base': 0,
+                'adjustMultilineComment': False
+            }),
+            'newline': '\n',
+            'space': ' ',
+            'json': False,
+            'renumber': False,
+            'hexadecimal': False,
+            'quotes': 'single',
+            'escapeless': False,
+            'compact': False,
+            'parentheses': True,
+            'semicolons': True,
+            'safeConcatenation': False,
+            'preserveBlankLines': False
+        }),
+        'moz': SimpleObj({
+            'comprehensionExpressionStartsWithAssignment': False,
+            'starlessGenerator': False
+        }),
+        'sourceMap': None,
+        'sourceMapRoot': None,
+        'sourceMapWithCode': False,
+        'directive': False,
+        'raw': True,
+        'verbatim': None,
+        'sourceCode': None
+    })
 
 def stringRepeat(string, num):
     result = ''
@@ -980,6 +976,7 @@ def generate(node, options=None):
     escapeless = options.format.escapeless
     newline = options.format.newline
     space = options.format.space
+
     if options.format.compact:
         newline = space = indent = base = ''
         
@@ -2546,3 +2543,6 @@ FORMAT_MINIFY.parentheses = True
 FORMAT_MINIFY.semicolons = True
 
 FORMAT_DEFAULTS = getDefaultOptions().format
+
+
+

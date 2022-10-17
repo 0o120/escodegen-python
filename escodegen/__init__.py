@@ -1,4 +1,5 @@
-from .escodegen import generate
-from .escodegen import SimpleObj
-
-
+from .escodegen import (
+    generate,
+    FORMAT_DEFAULTS,
+    FORMAT_MINIFY
+)
