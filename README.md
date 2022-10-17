@@ -12,7 +12,7 @@ for a demo. This repository contains the Python translation of Escodegen.
 
 ### Usage
 
-A simple example: the program
+Example:
 ````js
 import escodegen
 
