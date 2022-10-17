@@ -6,14 +6,14 @@ AST. See the [online generator](https://estools.github.io/escodegen/demo/index.h
 for a demo. This repository contains the Python translation of Escodegen.
 
 
-### Install
+## Install
 
     pip install escodegen
 
-### Usage
+## Usage
 
-Example:
-````js
+### Example:
+```python
 import escodegen
 
 escodegen.generate({
@@ -22,9 +22,17 @@ escodegen.generate({
     'left': { 'type': 'Literal', 'value': 40 },
     'right': { 'type': 'Literal', 'value': 2 }
 })
-````
-produces the string `'40 + 2'`.
+```
+*produces the string: `'40 + 2'`*
 
+### Example:
+```python
+import escodegen
+import esprima
+
+escodegen.generate(esprima.parse('let a=10;let b=20'))
+```
+*produces the string: `'let a = 10;\nlet b = 20;'`*
 
 See the [API page](https://github.com/estools/escodegen/wiki/API) for
 options.
