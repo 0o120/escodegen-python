@@ -19,11 +19,11 @@ import escodegen
 escodegen.generate({
     'type': 'BinaryExpression',
     'operator': '+',
-    'left': { 'type': 'Literal', 'value': 40 },
+    'left': { 'type': 'Literal', 'value': 20 },
     'right': { 'type': 'Literal', 'value': 2 }
 })
 ```
-*produces the string: `'40 + 2'`*
+*produces the string: `'20 + 2'`*
 
 ### Example:
 ```python
