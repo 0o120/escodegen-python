@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "escodegen"
-version = "1.0.4"
+version = "1.0.5"
 authors = [
 	{ name="0x78", email="contact@0x78.com" }
 ]
@@ -29,7 +29,10 @@ classifiers = [
     "Topic :: Text Processing :: General",
     "Programming Language :: Python :: 3.7"
 ]
-install_requires = ["esutils", "esprima-fork"]
+dependencies = [
+	"esutils",
+	"esprima-fork"
+]
 
 [project.urls]
 "Homepage" = "https://github.com/0o120/escodegen-python"
