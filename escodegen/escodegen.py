@@ -31,10 +31,7 @@
 
 import re
 import math
-try:
-    from . import esutils
-except:
-    import esutils
+import esutils
 
 
 
