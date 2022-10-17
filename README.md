@@ -30,9 +30,9 @@ escodegen.generate({
 import escodegen
 import esprima
 
-escodegen.generate(esprima.parse('let a=10;let b=30'))
+escodegen.generate(esprima.parse('let a=10;let b=20'))
 ```
-*produces the string: `'let a = 10;\nlet b = 30;'`*
+*produces the string: `'let a = 10;\nlet b = 20;'`*
 
 See the [API page](https://github.com/estools/escodegen/wiki/API) for
 options.
