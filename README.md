@@ -19,16 +19,16 @@ for a demo. This repository contains the Python translation of Escodegen.
 ### Usage
 
 A simple example: the program
-    
-    import escodegen
-    
-    escodegen.generate({
-        'type': 'BinaryExpression',
-        'operator': '+',
-        'left': { 'type': 'Literal', 'value': 40 },
-        'right': { 'type': 'Literal', 'value': 2 }
-    })
+````js
+import escodegen
 
+escodegen.generate({
+    'type': 'BinaryExpression',
+    'operator': '+',
+    'left': { 'type': 'Literal', 'value': 40 },
+    'right': { 'type': 'Literal', 'value': 2 }
+})
+````
 produces the string `'40 + 2'`.
 
 
