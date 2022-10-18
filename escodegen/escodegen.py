@@ -1695,7 +1695,7 @@ class CodeGeneratorStatement:
         def fn(*args, **kwargs):
             nonlocal result
             result.extend([
-                'with' + space + '(',
+                'while' + space + '(',
                 that.generateExpression(stmt.test, Precedence.Sequence, E_TTT),
                 ')'
             ])
@@ -1710,7 +1710,7 @@ class CodeGeneratorStatement:
         def fn(*args, **kwargs):
             nonlocal result
             result.extend([
-                'while' + space + '(',
+                'with' + space + '(',
                 that.generateExpression(stmt.test, Precedence.Sequence, E_TTT),
                 ')'
             ])
