@@ -218,6 +218,7 @@ class SimpleObj:
     _ignore = [
         'fromJsonString',
         'fromJsonFile',
+        'fromDict',
         '_ignore',
         '_ignored'
     ]
@@ -2342,7 +2343,7 @@ class CodeGeneratorExpression:
     def ImportExpression(self, expr, precedence, flags):
         return parenthesize([
             'import(',
-            self.generateExpression(expr.source, Precedence.Assignment, E_TTT),
+            (expr.source and self.generateExpression(expr.source, Precedence.Assignment, E_TTT) or ''),
             ')'
         ], Precedence.Call, precedence)
 
