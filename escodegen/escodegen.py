@@ -1215,7 +1215,7 @@ class CodeGeneratorStatement:
         if stmt.specifiers:
             if len(stmt.specifiers) == 0:
                 result = join(result, '{' + space + '}')
-            elif stmt.specifiers[0].type == Syntax.ExportBatchSpecifier:
+            elif stmt.specifiers[0].type == Syntax.ExportSpecifier:
                 result = join(result, self.generateExpression(stmt.specifiers[0], Precedence.Sequence, E_TTT))
             else:
                 result = join(result, '{')
