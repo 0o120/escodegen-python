@@ -4,11 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "escodegen"
-version = "1.0.9"
+version = "1.0.10"
 authors = [
 	{ name="0x78", email="contact@0x78.com" }
 ]
-requires-python = ">=3.7"
+requires-python = ">=3.6"
 description = "ECMAScript code generator"
 readme = "README.md"
 keywords = [
@@ -27,7 +27,7 @@ classifiers = [
     "Topic :: Software Development :: Compilers",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Text Processing :: General",
-    "Programming Language :: Python :: 3.7"
+    "Programming Language :: Python :: 3.6"
 ]
 dependencies = [
 	"esutils"
