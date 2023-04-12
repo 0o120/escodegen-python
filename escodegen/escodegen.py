@@ -626,7 +626,7 @@ def escapeString(string):
     
     for i in range(len(string)):
         code = ord(string[i])
-        if (code == 0x27 and single) or (code == 0x22 and not single):
+        if not ((code == 0x27 and single) or (code == 0x22 and not single)):
             result += chr(code)
     
     return result + quote
