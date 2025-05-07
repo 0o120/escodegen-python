@@ -604,6 +604,12 @@ def escapeString(string):
         elif esutils.code.isLineTerminator(code) or code == 0x5c: # '\'
             result += escapeDisallowedCharacter(code)
             continue
+        elif (
+            0x3000 <= code <= 0x303F or  # 中文标点符号
+            0xFF00 <= code <= 0xFFEF     # 半角及全角标记
+        ):
+            result += chr(code)  # 直接保留字符形式
+            continue
         elif not esutils.code.isIdentifierPartES5(code) and (
                 json and code < 0x20 or # 'SP'
                 not json and not escapeless and (
