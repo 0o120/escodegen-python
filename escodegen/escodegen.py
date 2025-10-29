@@ -2237,7 +2237,7 @@ class CodeGeneratorExpression:
             return 'null'
 
         if type(expr.value) == str:
-            return escapeString(expr.value)
+            return repr(expr.value)
 
         if type(expr.value) in (int, float):
             return generateNumber(expr.value)
