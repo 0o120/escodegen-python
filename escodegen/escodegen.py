@@ -113,7 +113,8 @@ def validateNodeFields(node):
 
 def generate(node, options=None):
     """Generate without mutating input ASTs or sharing formatting state."""
-    token = _generation_context.set(SimpleNamespace(activeNodes=set()))
+    context = SimpleNamespace(activeNodes=set(), identifierNames=set())
+    token = _generation_context.set(context)
     try:
         return _generate(node, options)
     except RecursionError as error:
@@ -354,31 +355,83 @@ class SimpleObj:
             return JSON.load(f, object_hook=SimpleObj)
     
     @staticmethod
-    def fromDict(obj):
+    def fromDict(obj, hashbangContainers=None):
         memo = {}
+        kinds = {}
+        nativeFields = {}
         def adapt(value):
-            if isinstance(value, (Mapping, SimpleObj)) or (
-                    hasattr(value, '__dict__') and not callable(value)):
+            cls = type(value)
+            if value is None or cls in (str, int, float, bool):
+                return value
+            if isinstance(value, (list, tuple)) and (
+                    cls is list or cls is tuple or not isinstance(value, Mapping)):
+                identity = id(value)
+                if identity in memo:
+                    return memo[identity]
+                result = []
+                memo[identity] = result
+                result.extend(adapt(item) for item in value)
+                return result
+            kind = kinds.get(cls)
+            if kind is None:
+                if cls is dict or isinstance(value, Mapping):
+                    kind = 'mapping'
+                elif isinstance(value, SimpleObj) or (hasattr(value, '__dict__') and not callable(value)):
+                    kind = 'native'
+                else:
+                    kind = 'opaque'
+                kinds[cls] = kind
+            if kind != 'opaque':
                 identity = id(value)
                 if identity in memo:
                     return memo[identity]
                 result = SimpleObj()
                 memo[identity] = result
-                fields = value.items() if isinstance(value, Mapping) else vars(value).items()
+                if kind == 'mapping':
+                    fields = value.items()
+                else:
+                    attributes = vars(value)
+                    additions = nativeFields.get(cls)
+                    if additions is None:
+                        additions = {}
+                        for base in reversed(cls.__mro__):
+                            for key, field in vars(base).items():
+                                if not key.startswith('_'):
+                                    if not callable(field) and not isinstance(field, (staticmethod, classmethod)):
+                                        additions[key] = field
+                                    else:
+                                        additions.pop(key, None)
+                        nativeFields[cls] = additions
+                    if additions:
+                        attributes = dict(attributes)
+                        for key in additions:
+                            # Honor subclass descriptors rather than bypassing
+                            # a property with a raw instance-dictionary value.
+                            attributes[key] = getattr(value, key)
+                    fields = attributes.items()
+                data = vars(result)
                 for key, item in fields:
-                    setattr(result, key, adapt(item))
+                    data[key] = adapt(item)
                 for canonical, legacy in [('async', 'isAsync'), ('await', 'allowAwait')]:
-                    if canonical in result:
-                        if legacy in result and result[canonical] != result[legacy]:
+                    if canonical in data:
+                        if legacy in data and data[canonical] != data[legacy]:
                             raise ValueError(f'Conflicting {canonical}/{legacy} AST fields')
-                        result[legacy] = result[canonical]
-                if result.type == 'FieldDefinition':
-                    result.type = 'PropertyDefinition'
+                        data[legacy] = data[canonical]
+                if data.get('type') == 'FieldDefinition':
+                    data['type'] = 'PropertyDefinition'
+                if hashbangContainers is not None and any(key in data for key in ('comments', 'leadingComments', 'trailingComments', 'innerComments')):
+                    hashbangContainers.append(result)
                 return result
-            if isinstance(value, (list, tuple)):
-                return [adapt(item) for item in value]
             return value
-        return adapt(obj)
+        try:
+            return adapt(obj)
+        finally:
+            memo.clear()
+            kinds.clear()
+            nativeFields.clear()
+            # The recursive closure otherwise retains comment containers
+            # (and copied nodes) until cyclic garbage collection runs.
+            adapt = None
     
 def getDefaultOptions():
     # default options
@@ -875,36 +928,27 @@ def validateSourceRanges(node):
             for key in value:
                 visit(value[key])
         elif isinstance(value, list):
-            for item in value:
-                visit(item)
-    visit(node)
-
-
-def extractHashbang(node):
-    hashbang = node.hashbang if node.type == Syntax.Program else None
-    seen = set()
-    def visit(value):
-        nonlocal hashbang
-        if isinstance(value, SimpleObj):
             if id(value) in seen:
                 return
             seen.add(id(value))
-            for key in ('comments', 'leadingComments', 'trailingComments', 'innerComments'):
-                comments = value[key]
-                if comments:
-                    for comment in comments:
-                        if comment.hashbang or comment.type == 'Hashbang':
-                            text = comment.value.removeprefix('#!')
-                            if hashbang is not None and hashbang != text:
-                                raise ValueError('Conflicting Program/comment hashbang metadata')
-                            hashbang = text
-                    value[key] = [comment for comment in comments if not comment.hashbang and comment.type != 'Hashbang']
-            for key in value:
-                visit(value[key])
-        elif isinstance(value, list):
             for item in value:
                 visit(item)
     visit(node)
+
+
+def extractHashbang(node, containers):
+    hashbang = node.hashbang if node.type == Syntax.Program else None
+    for value in containers:
+        for key in ('comments', 'leadingComments', 'trailingComments', 'innerComments'):
+            comments = value[key]
+            if comments:
+                for comment in comments:
+                    if comment.hashbang or comment.type == 'Hashbang':
+                        text = comment.value.removeprefix('#!')
+                        if hashbang is not None and hashbang != text:
+                            raise ValueError('Conflicting Program/comment hashbang metadata')
+                        hashbang = text
+                value[key] = [comment for comment in comments if not comment.hashbang and comment.type != 'Hashbang']
     if hashbang is not None and (not isinstance(hashbang, str) or hasLineTerminator(hashbang)):
         raise ValueError('Program.hashbang must contain one line excluding #!')
     return hashbang
@@ -1118,10 +1162,16 @@ def generateVerbatim(expr, precedence):
     return toSourceNodeWhenNeeded(result, expr)
 
 def generateIdentifier(node):
-    if not isinstance(node.name, str) or not node.name or not esutils.code.isIdentifierStart(ord(node.name[0])) or any(
-            not esutils.code.isIdentifierPart(ord(character)) for character in node.name[1:]):
-        raise ValueError('Identifier.name must be a valid ECMAScript IdentifierName')
-    return toSourceNodeWhenNeeded(('#' if node.type == 'PrivateIdentifier' else '') + node.name, node)
+    name = node.name
+    exact = type(name) is str
+    known = _context().identifierNames
+    if not exact or name not in known:
+        if not isinstance(name, str) or not name or not esutils.code.isIdentifierStart(ord(name[0])) or any(
+                not esutils.code.isIdentifierPart(ord(character)) for character in name[1:]):
+            raise ValueError('Identifier.name must be a valid ECMAScript IdentifierName')
+        if exact:
+            known.add(name)
+    return toSourceNodeWhenNeeded(('#' if node.type == 'PrivateIdentifier' else '') + name, node)
 
 def generateAsyncPrefix(node, spaceRequired):
     return 'async' + (noEmptySpace() if spaceRequired else _context().space) if node.isAsync else ''
@@ -1219,10 +1269,11 @@ def _generate(node, options=None):
 
     _context().extra = options
 
-    node = SimpleObj.fromDict(node)
+    hashbangContainers = []
+    node = SimpleObj.fromDict(node, hashbangContainers)
     if _context().preserveBlankLines:
         validateSourceRanges(node)
-    hashbang = extractHashbang(node)
+    hashbang = extractHashbang(node, hashbangContainers)
     
     result = generateInternal(node)
     if hashbang is not None:

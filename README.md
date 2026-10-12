@@ -93,6 +93,12 @@ legacy `indent`/`base`. Raw reuse requires an equivalent literal from `parse`.
 text is trusted JavaScript. Escaped strict directives retain non-strict
 semantics. Inputs are not modified.
 
+Native AST adaptation creates a per-call snapshot and preserves shared
+references, custom mappings, and subclass properties. This snapshot can
+contribute substantial latency and allocation for large native trees;
+benchmark the AST representation used by your application. Identifier
+validation and adapter type information are cached only within each call.
+
 Comments must be attached as `leadingComments`/`trailingComments` or block
 `innerComments`; this package
 does not expose upstream `attachComments`. `preserveBlankLines` requires

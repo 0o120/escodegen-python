@@ -1,5 +1,8 @@
 import copy
+import gc
 import unittest
+import weakref
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
@@ -7,6 +10,70 @@ from escodegen import generate
 
 
 class ContextTests(unittest.TestCase):
+    def test_custom_mapping_and_native_subclass_properties_are_preserved(self):
+        class CustomMapping(Mapping):
+            def __init__(self, fields):
+                self.fields = fields
+            def __getitem__(self, key):
+                return self.fields[key]
+            def __iter__(self):
+                return iter(self.fields)
+            def __len__(self):
+                return len(self.fields)
+        self.assertEqual(generate(CustomMapping({'type': 'Literal', 'value': 3})), '3')
+        class ListMapping(list, CustomMapping):
+            def __init__(self, fields):
+                list.__init__(self)
+                CustomMapping.__init__(self, fields)
+            __getitem__ = CustomMapping.__getitem__
+            __iter__ = CustomMapping.__iter__
+            __len__ = CustomMapping.__len__
+        self.assertEqual(generate(ListMapping({'type': 'Identifier', 'name': 'x'})), 'x')
+        class NativeLiteral:
+            type = 'Literal'
+            def __init__(self):
+                self.__dict__['value'] = 2
+            @property
+            def value(self):
+                return self.__dict__['value'] * 2
+        node = NativeLiteral()
+        self.assertEqual(generate(node), '4')
+        self.assertEqual(node.__dict__['value'], 2)
+
+    def test_custom_array_subclasses_and_metadata_cycles(self):
+        class Array(list):
+            pass
+        node = {'type': 'Program', 'body': Array([{'type': 'EmptyStatement'}])}
+        self.assertEqual(generate(node), ';')
+        metadata = []
+        metadata.append(metadata)
+        ast = {'type': 'Literal', 'value': 1, 'range': [0, 1], 'metadata': metadata}
+        self.assertEqual(generate(ast), '1')
+        self.assertEqual(generate(ast, {'sourceCode': '1', 'format': {'preserveBlankLines': True}}), '1')
+
+    def test_public_attribute_adapter_still_copies_native_values(self):
+        from escodegen.escodegen import SimpleObj
+        native = SimpleNamespace(type='Literal', value=1)
+        adapted = SimpleObj.fromDict(native)
+        native.value = 2
+        self.assertEqual(adapted.value, 1)
+        self.assertIsNot(adapted, native)
+
+    def test_comment_adapter_copy_is_released_without_cyclic_gc(self):
+        from escodegen.escodegen import SimpleObj
+        enabled = gc.isenabled()
+        gc.disable()
+        try:
+            containers = []
+            adapted = SimpleObj.fromDict({'type': 'Program', 'body': [], 'comments': []}, containers)
+            copied = weakref.ref(adapted)
+            self.assertIs(containers[0], adapted)
+            del adapted, containers
+            self.assertIsNone(copied())
+        finally:
+            if enabled:
+                gc.enable()
+
     def test_nested_generation_does_not_leak_options(self):
         def parse(raw):
             self.assertEqual(generate({'type': 'Literal', 'value': 'inner'}, {
