@@ -34,6 +34,7 @@ import math
 import esutils
 import html
 from collections.abc import Mapping
+from .sourcemap import SourceNode
 
 
 
@@ -647,15 +648,15 @@ def toSourceNodeWhenNeeded(generated, node=None, toString=False):
             return generated
     
     if node is None:
-        if isinstance(generated, _context().SourceNode):
+        if isinstance(generated, SourceNode):
             return generated
         else:
             node = SimpleObj()
             
     if node.loc is None:
-        sn = _context().SourceNode(None, None, _context().sourceMap, generated, node.name or None)
+        sn = SourceNode(None, None, _context().sourceMap, generated, node.name or None)
     else:
-        sn = _context().SourceNode(node.loc.start.line, node.loc.start.column, (node.loc.source or None) if _context().sourceMap == True else _context().sourceMap, generated, node.name or None)
+        sn = SourceNode(node.loc.start.line, node.loc.start.column, (node.loc.source or 'source.js') if _context().sourceMap == True else _context().sourceMap, generated, node.name or None)
     return sn.toString() if toString else sn
 
 def noEmptySpace():
@@ -703,6 +704,60 @@ def calculateSpaces(string):
         i -= 1
     return (len(string) - 1) - i
 
+
+class UTF16Source:
+    """Source slicing uses ESTree offsets, measured in UTF-16 code units."""
+    def __init__(self, source):
+        if not isinstance(source, str):
+            raise TypeError('sourceCode must be a string')
+        self.data = source.encode('utf-16-le', 'surrogatepass')
+
+    def __len__(self):
+        return len(self.data) // 2
+
+    def validate(self, start, end):
+        if not isinstance(start, int) or not isinstance(end, int) or not 0 <= start <= end <= len(self):
+            raise ValueError('source ranges require ordered UTF-16 offsets within sourceCode')
+        for offset in (start, end):
+            if 0 < offset < len(self):
+                before = int.from_bytes(self.data[2 * offset - 2:2 * offset], 'little')
+                after = int.from_bytes(self.data[2 * offset:2 * offset + 2], 'little')
+                if 0xd800 <= before <= 0xdbff and 0xdc00 <= after <= 0xdfff:
+                    raise ValueError('source range splits a UTF-16 surrogate pair')
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            start = 0 if key.start is None else key.start
+            end = len(self) if key.stop is None else key.stop
+            self.validate(start, end)
+            if key.step is not None:
+                raise ValueError('source slices do not support steps')
+            return self.data[2 * start:2 * end].decode('utf-16-le', 'surrogatepass')
+        if not isinstance(key, int) or not 0 <= key < len(self):
+            raise ValueError('source index is outside sourceCode')
+        return self.data[2 * key:2 * key + 2].decode('utf-16-le', 'surrogatepass')
+
+
+def validateSourceRanges(node):
+    seen = set()
+    def visit(value):
+        if isinstance(value, SimpleObj):
+            if id(value) in seen:
+                return
+            seen.add(id(value))
+            for field in ('range', 'extendedRange'):
+                span = value[field]
+                if span is not None:
+                    if not isinstance(span, list) or len(span) != 2:
+                        raise ValueError(f'{field} must contain two UTF-16 offsets')
+                    _context().sourceCode.validate(*span)
+            for key in value:
+                visit(value[key])
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+    visit(node)
+
 def adjustMultilineComment(value, specialBase):
     pass
     
@@ -728,7 +783,7 @@ def adjustMultilineComment(value, specialBase):
         #                 */
         # }
         previousBase = _context().base
-        if array[1][spaces] == '*':
+        if len(array[1]) > spaces and array[1][spaces] == '*':
             specialBase += ' '
         _context().base = specialBase
     else:
@@ -744,7 +799,7 @@ def adjustMultilineComment(value, specialBase):
     i = 1
     while i < len(array):
         sn = toSourceNodeWhenNeeded(addIndent(array[i][spaces:]))
-        array[i] = sn.join('') if _context().sourceMap else sn
+        array[i] = sn.toString() if _context().sourceMap else sn
         i += 1
         
     _context().base = previousBase
@@ -766,6 +821,9 @@ def generateComment(comment, specialBase=None):
 
 def addComments(stmt, result):
 
+    if not isinstance(result, list):
+        result = [result]
+
     if stmt.leadingComments and len(stmt.leadingComments) > 0:
 
         save = result
@@ -774,7 +832,7 @@ def addComments(stmt, result):
             comment = stmt.leadingComments[0]
             result = []
         
-            extRange = comment.extendedRange
+            extRange = comment.extendedRange or comment.range
             _range = comment.range
             
             prefix = _context().sourceCode[extRange[0]:_range[0]]
@@ -801,7 +859,7 @@ def addComments(stmt, result):
                 prevRange = _range
                 i += 1
 
-            suffix = _context().sourceCode[_range[1], extRange[1]]
+            suffix = _context().sourceCode[_range[1]:extRange[1]]
             count = len(re.compile('\n').findall(suffix) or [])
             result.append(stringRepeat('\n', count))
         else:
@@ -826,7 +884,7 @@ def addComments(stmt, result):
         
         if _context().preserveBlankLines:
             comment = stmt.trailingComments[0]
-            extRange = comment.extendedRange
+            extRange = comment.extendedRange or comment.range
             _range = comment.range
             
             prefix = _context().sourceCode[extRange[0]:_range[0]]
@@ -864,6 +922,7 @@ def addComments(stmt, result):
     return result
             
 def generateBlankLines(start, end, result):
+    _context().sourceCode.validate(start, end)
     newlineCount = 0
     
     for j in range(start, end):
@@ -979,16 +1038,15 @@ def _generate(node, options=None):
     _context().directive = options.directive
     _context().parse = None if _context().json else options.parse
     _context().sourceMap = options.sourceMap
-    _context().sourceCode = options.sourceCode
+    _context().sourceCode = UTF16Source(options.sourceCode) if options.sourceCode is not None else None
     
     _context().preserveBlankLines = options.format.preserveBlankLines and not _context().sourceCode is None
 
     _context().extra = options
 
-    if _context().sourceMap:
-        _context().SourceNode = SimpleObj()
-        
     node = SimpleObj.fromDict(node)
+    if _context().preserveBlankLines:
+        validateSourceRanges(node)
     
     result = generateInternal(node)
     
@@ -1001,8 +1059,12 @@ def _generate(node, options=None):
         'sourceRoot': options.sourceMapRoot
     }))
     
-    if options.sourceContent:
-        pair.map.setSourceContent(options.sourceMap, options.sourceContent)
+    if options.sourceContent is not None:
+        if isinstance(options.sourceMap, str):
+            pair.map.setSourceContent(options.sourceMap, options.sourceContent)
+        elif options.sourceMap is True:
+            for source in pair.map.toJSON()['sources']:
+                pair.map.setSourceContent(source, options.sourceContent)
     
     if options.sourceMapWithCode:
         return pair
