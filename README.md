@@ -100,6 +100,12 @@ and leave inputs unchanged. Public `SimpleObj.fromDict` always copies native
 values. Identifier validation and adapter type information are cached only
 within each call.
 
+The final performance pass reduced medium native generation by 39.5% and
+peak allocation by 75.9% from the modernization starting checkpoint. Mapping
+generation retains its gains over the original port; native generation
+remains slower than original in the measured legacy cases. See
+[performance status](PERFORMANCE.md) for exact revisions, workloads and limits.
+
 Comments must be attached as `leadingComments`/`trailingComments` or block
 `innerComments`; this package
 does not expose upstream `attachComments`. `preserveBlankLines` requires

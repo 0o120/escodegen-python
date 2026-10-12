@@ -2,6 +2,13 @@
 
 ## 2.0.0 (unreleased)
 
+- Generate compatible native attribute ASTs directly, preserving the public
+  snapshot adapter and conservative fallback for custom behavior. Reduce
+  dispatch/context/flattening costs, use verified ordinal character helpers
+  with strict fallbacks, and load HTML support when JSX needs it. The final
+  performance pass improves medium native generation 39.5% and peak allocation
+  75.9% from the modern starting checkpoint; native original parity remains
+  outstanding. See `PERFORMANCE.md` for measured limits and validation.
 - Fix ECMAScript and JSON string escaping for punctuation, controls, astral
   code points and lone UTF-16 surrogates while preserving quote options.
   Regression reports credited to wjsw1781 (PR #4) and AugustineFulgur (PR #5).
