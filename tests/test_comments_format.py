@@ -81,6 +81,25 @@ class CommentFormatTests(unittest.TestCase):
             code = generate(ast, dict(options, comment=True))
             self.assertEqual(code.count('/*license*/'), 1)
 
+    def test_inner_comments_survive_empty_class_object_and_array_nodes(self):
+        for node_type, field in [('ClassBody', 'body'), ('ObjectExpression', 'properties'),
+                                 ('ObjectPattern', 'properties'), ('ArrayExpression', 'elements'),
+                                 ('ArrayPattern', 'elements')]:
+            ast = {'type': node_type, field: [], 'innerComments': [{'type': 'Block', 'value': 'license'}]}
+            for compact in [False, True]:
+                with self.subTest(node_type=node_type, compact=compact):
+                    code = generate(ast, {'comment': True, 'format': {'compact': compact}})
+                    self.assertEqual(code.count('/*license*/'), 1)
+
+    def test_static_block_blank_lines_use_actual_brace_range(self):
+        source = 'static /*{\U0001f600}*/ {\n/*license*/\n}'
+        ast = {'type': 'StaticBlock', 'body': [],
+               'range': [0, len(source.encode('utf-16-le')) // 2]}
+        code = generate(ast, {'comment': True, 'sourceCode': source,
+                              'format': {'preserveBlankLines': True}})
+        self.assertIn('{\n/*license*/\n}', code)
+        self.assertEqual(code.count('license'), 1)
+
     def test_jsx_spread_children_and_text_escaping(self):
         ast = {'type': 'JSXFragment', 'children': [
             {'type': 'JSXText', 'value': '<&{text}'},

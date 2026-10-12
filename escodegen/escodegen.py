@@ -1312,6 +1312,8 @@ class CodeGeneratorStatement:
         return 'continue' + self.semicolon(flags)
     
     def ClassBody(self, stmt, flags):
+        if not stmt.body and _context().extra.comment and stmt.innerComments:
+            return self.emptyContainer(stmt, '{', '}')
         result = [ '{', _context().newline]
         that = self
         
@@ -2219,7 +2221,7 @@ class CodeGeneratorExpression:
     def ArrayExpression(self, expr, precedence, flags, isPattern=False):
         that = self
         if not len(expr.elements):
-            return '[]'
+            return self.emptyContainer(expr, '[', ']')
 
         multiline = False if isPattern else len(expr.elements) > 1
         result = ['[', _context().newline if multiline else '']
@@ -2300,6 +2302,15 @@ class CodeGeneratorExpression:
     def StaticBlock(self, expr, precedence, flags):
         block = SimpleObj({'type': Syntax.BlockStatement, 'body': expr.body,
                            'innerComments': expr.innerComments})
+        if _context().preserveBlankLines:
+            if expr.range is None:
+                raise ValueError('StaticBlock.range is required to preserve blank lines')
+            source = _context().sourceCode[expr.range[0]:expr.range[1]]
+            prefix = re.match(r'static(?:\s|/\*.*?\*/|//[^\r\n\u2028\u2029]*(?:\r\n|[\r\n\u2028\u2029]))*\{', source, re.S)
+            if prefix is None:
+                raise ValueError('StaticBlock.range must cover the static keyword and block braces')
+            opening = len(source[:prefix.end() - 1].encode('utf-16-le', 'surrogatepass')) // 2
+            block.range = [expr.range[0] + opening, expr.range[1]]
         return ['static', _context().space, self.generateStatement(block, S_TFFF)]
     
     def Property(self, expr, precedence, flags):
@@ -2333,7 +2344,7 @@ class CodeGeneratorExpression:
         fragment = ''
         result = []
         if not len(expr.properties):
-            return '{}'
+            return self.emptyContainer(expr, '{', '}')
 
         multiline = len(expr.properties) > 1
 
@@ -2385,7 +2396,7 @@ class CodeGeneratorExpression:
         that = self
         
         if not len(expr.properties):
-            return '{}'
+            return self.emptyContainer(expr, '{', '}')
 
         multiline = False
         if len(expr.properties) == 1:
@@ -2675,6 +2686,20 @@ class CodeGeneratorExpression:
         return ['<>', [self.generateExpression(child, Precedence.Primary, E_TTT) for child in expr.children], '</>']
 
 class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
+
+    def emptyContainer(self, node, opening, closing):
+        if not _context().extra.comment or not node.innerComments:
+            return opening + closing
+        result = [opening, _context().newline]
+        def emit(*args):
+            for comment in node.innerComments:
+                fragment = toSourceNodeWhenNeeded(addIndent(generateComment(comment)), comment)
+                result.append(fragment)
+                if not endsWithLineTerminator(toSourceNodeWhenNeeded(fragment, toString=True)):
+                    result.append('\n' if comment.type == 'Line' else _context().newline)
+        withIndent(emit)
+        result.extend([_context().base, closing])
+        return result
 
     def firstExpression(self, node):
         while True:
