@@ -101,7 +101,9 @@ class RoundtripTests(unittest.TestCase):
         expected = parse_many([dict(job, normalized=True) for job in original_jobs])
         jobs, expectations = [], []
         formats = [{}, {'format': FORMAT_MINIFY}, {'format': {'quotes': 'double', 'semicolons': False}},
-                   {'format': {'space': '', 'newline': ''}}, {'sourceMap': 'input.js', 'sourceMapWithCode': True}]
+                   {'format': {'space': '', 'newline': ''}}, {'sourceMap': 'input.js', 'sourceMapWithCode': True},
+                   {'format': {'parentheses': False, 'safeConcatenation': True}},
+                   {'format': {'newline': '\r\n', 'indent': {'style': '\t', 'base': 1}}}]
         for ast, job, normalized in zip(original, original_jobs, expected):
             for options in formats:
                 try:

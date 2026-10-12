@@ -42,6 +42,12 @@ class ContextTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Conflicting async'):
             generate({'type': 'FunctionExpression', 'async': True, 'isAsync': False})
 
+    def test_identifier_names_use_modern_unicode(self):
+        self.assertEqual(generate({'type': 'Identifier', 'name': '\U00010400x'}), '\U00010400x')
+        for name in ['', 'has space', '\ud800', '1start']:
+            with self.assertRaisesRegex(ValueError, 'IdentifierName'):
+                generate({'type': 'Identifier', 'name': name})
+
 
 if __name__ == '__main__':
     unittest.main()

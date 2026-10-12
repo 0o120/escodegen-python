@@ -620,7 +620,7 @@ def escapeString(string):
             result.append(escapeDisallowedCharacter(code))
         elif code < 0x20 or 0xd800 <= code <= 0xdfff or (
                 not _context().json and not _context().escapeless and code > 0x7e and
-                not esutils.code.isIdentifierPartES5(code)):
+                not esutils.code.isIdentifierPart(code)):
             nextChar = ord(string[i + 1]) if i + 1 < len(string) else None
             result.append(escapeAllowedCharacter(code, nextChar))
         elif _context().json and character == '/':
@@ -681,7 +681,7 @@ def join(left, right):
     rightCharCode = ord(rightSource[0])
     
     if ((leftCharCode == 0x2b or leftCharCode == 0x2d) and leftCharCode == rightCharCode or
-        esutils.code.isIdentifierPartES5(leftCharCode) and esutils.code.isIdentifierPartES5(rightCharCode) or
+        esutils.code.isIdentifierPart(leftCharCode) and esutils.code.isIdentifierPart(rightCharCode) or
         leftCharCode == 0x2f and rightCharCode == 0x69):
         return [left, noEmptySpace(), right]
     elif (esutils.code.isWhiteSpace(leftCharCode) or esutils.code.isLineTerminator(leftCharCode) or
@@ -991,6 +991,9 @@ def generateVerbatim(expr, precedence):
     return toSourceNodeWhenNeeded(result, expr)
 
 def generateIdentifier(node):
+    if not isinstance(node.name, str) or not node.name or not esutils.code.isIdentifierStart(ord(node.name[0])) or any(
+            not esutils.code.isIdentifierPart(ord(character)) for character in node.name[1:]):
+        raise ValueError('Identifier.name must be a valid ECMAScript IdentifierName')
     return toSourceNodeWhenNeeded(('#' if node.type == 'PrivateIdentifier' else '') + node.name, node)
 
 def generateAsyncPrefix(node, spaceRequired):
@@ -1076,6 +1079,8 @@ def _generate(node, options=None):
     _context().directive = options.directive
     _context().parse = None if _context().json else options.parse
     _context().sourceMap = options.sourceMap
+    if options.sourceMap is not None and not isinstance(options.sourceMap, (str, bool)):
+        raise ValueError('sourceMap must be a source filename, boolean or None')
     _context().sourceCode = UTF16Source(options.sourceCode) if options.sourceCode is not None else None
     
     _context().preserveBlankLines = options.format.preserveBlankLines and not _context().sourceCode is None
@@ -1899,7 +1904,7 @@ class CodeGeneratorExpression:
         leftSource = fragment # TODO fragment.toString()
 
         if (ord(leftSource[len(leftSource) - 1]) == 0x2f and # '/'
-                esutils.code.isIdentifierPartES5(ord(expr.operator[0]))):
+                esutils.code.isIdentifierPart(ord(expr.operator[0]))):
             result = [fragment, noEmptySpace(), expr.operator]
         else:
             result = join(fragment, expr.operator)
@@ -2035,7 +2040,7 @@ class CodeGeneratorExpression:
                 if (((  leftCharCode == 0x2B or # '+' 
                         leftCharCode == 0x2D # '-'
                         ) and leftCharCode == rightCharCode) or
-                        (esutils.code.isIdentifierPartES5(leftCharCode) and esutils.code.isIdentifierPartES5(rightCharCode))
+                        (esutils.code.isIdentifierPart(leftCharCode) and esutils.code.isIdentifierPart(rightCharCode))
                     ):
                     result.append(noEmptySpace())
                     result.append(fragment)
