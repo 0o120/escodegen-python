@@ -68,6 +68,16 @@ class ContextTests(unittest.TestCase):
                                   {'parse': parse}), '/y/g')
         self.assertEqual(generate({'type': 'Literal', 'value': 1, 'raw': '1'}, {'parse': parse}), '1')
 
+    def test_malformed_children_lists_and_missing_null_are_diagnosed(self):
+        cases = [({'type': 'Literal'}, 'Literal.value'),
+                 ({'type': 'Program', 'body': None}, 'Program.body'),
+                 ({'type': 'VariableDeclaration', 'kind': 'const', 'declarations': []}, 'cannot be empty'),
+                 ({'type': 'CallExpression', 'callee': {'type': 'Identifier', 'name': 'f'}, 'arguments': None}, 'CallExpression.arguments'),
+                 ({'type': 'MemberExpression', 'object': None, 'property': {'type': 'Identifier', 'name': 'x'}}, 'MemberExpression.object')]
+        for ast, message in cases:
+            with self.assertRaisesRegex(ValueError, message):
+                generate(ast)
+
 
 if __name__ == '__main__':
     unittest.main()

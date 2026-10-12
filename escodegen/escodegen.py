@@ -53,6 +53,7 @@ def _context():
 def generationNode(method):
     @wraps(method)
     def guarded(self, node, *args):
+        validateNodeFields(node)
         identity = id(node)
         active = _context().activeNodes
         if identity in active:
@@ -63,6 +64,52 @@ def generationNode(method):
         finally:
             active.remove(identity)
     return guarded
+
+
+_NODE_LIST_FIELDS = {
+    'Program': 'body', 'BlockStatement': 'body', 'ClassBody': 'body', 'StaticBlock': 'body',
+    'ArrayExpression': 'elements', 'ArrayPattern': 'elements',
+    'ObjectExpression': 'properties', 'ObjectPattern': 'properties',
+    'SequenceExpression': 'expressions', 'CallExpression': 'arguments', 'NewExpression': 'arguments',
+    'FunctionExpression': 'params', 'FunctionDeclaration': 'params', 'ArrowFunctionExpression': 'params',
+    'VariableDeclaration': 'declarations', 'ImportDeclaration': 'specifiers',
+    'SwitchStatement': 'cases', 'SwitchCase': 'consequent',
+    'JSXElement': 'children', 'JSXFragment': 'children', 'JSXOpeningElement': 'attributes',
+}
+_NODE_CHILD_FIELDS = {
+    'ExpressionStatement': ('expression',), 'MemberExpression': ('object', 'property'),
+    'AssignmentExpression': ('left', 'right'), 'AssignmentPattern': ('left', 'right'),
+    'BinaryExpression': ('left', 'right'), 'LogicalExpression': ('left', 'right'),
+    'ConditionalExpression': ('test', 'consequent', 'alternate'),
+    'UnaryExpression': ('argument',), 'UpdateExpression': ('argument',),
+    'SpreadElement': ('argument',), 'RestElement': ('argument',),
+    'AwaitExpression': ('argument',), 'ThrowStatement': ('argument',),
+    'CallExpression': ('callee',), 'NewExpression': ('callee',),
+    'ChainExpression': ('expression',), 'ImportExpression': ('source',),
+    'ImportDeclaration': ('source',), 'ExportAllDeclaration': ('source',),
+    'PropertyDefinition': ('key',), 'Property': ('key', 'value'),
+    'MethodDefinition': ('key', 'value'), 'VariableDeclarator': ('id',),
+    'IfStatement': ('test', 'consequent'), 'WhileStatement': ('test', 'body'),
+    'WithStatement': ('object', 'body'), 'DoWhileStatement': ('test', 'body'),
+    'FunctionDeclaration': ('body',), 'FunctionExpression': ('body',), 'ArrowFunctionExpression': ('body',),
+    'JSXExpressionContainer': ('expression',), 'JSXSpreadChild': ('expression',),
+    'JSXSpreadAttribute': ('argument',), 'JSXElement': ('openingElement',),
+}
+
+
+def validateNodeFields(node):
+    if not isinstance(node, SimpleObj) or not isinstance(node.type, str):
+        raise ValueError('Expected an ESTree node with a string type field')
+    field = _NODE_LIST_FIELDS.get(node.type)
+    if field is not None and not isinstance(node[field], list):
+        raise ValueError(f'{node.type}.{field} must be a list')
+    if node.type in ('SequenceExpression', 'VariableDeclaration') and not node[field]:
+        raise ValueError(f'{node.type}.{field} cannot be empty')
+    for field in _NODE_CHILD_FIELDS.get(node.type, ()):
+        if not isinstance(node[field], SimpleObj) or not isinstance(node[field].type, str):
+            raise ValueError(f'{node.type}.{field} must contain an ESTree node')
+    if node.type == 'Literal' and 'value' not in node and node.regex is None and node.bigint is None:
+        raise ValueError('Literal.value is required; use an explicit None for null')
 
 def generate(node, options=None):
     """Generate without mutating input ASTs or sharing formatting state."""
@@ -1919,6 +1966,8 @@ class CodeGeneratorExpression:
         
         result = []
         
+        if expr.operator not in BinaryPrecedence:
+            raise ValueError('Unsupported binary operator: ' + str(expr.operator))
         currentPrecedence = BinaryPrecedence[expr.operator]
         leftPrecedence = Precedence.Postfix if expr.operator == '**' else currentPrecedence
         rightPrecedence = currentPrecedence if expr.operator == '**' else currentPrecedence + 1
@@ -2727,6 +2776,8 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
         return result
     
     def generateFunctionBody(self, node):
+
+        validateNodeFields(node)
 
         result = self.generateFunctionParams(node)
 
