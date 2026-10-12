@@ -32,6 +32,7 @@
 import re
 import math
 import esutils
+import html
 from collections.abc import Mapping
 
 
@@ -896,7 +897,7 @@ def generateVerbatim(expr, precedence):
     return toSourceNodeWhenNeeded(result, expr)
 
 def generateIdentifier(node):
-    return toSourceNodeWhenNeeded(node.name, node)
+    return toSourceNodeWhenNeeded(('#' if node.type == 'PrivateIdentifier' else '') + node.name, node)
 
 def generateAsyncPrefix(node, spaceRequired):
     return 'async' + (noEmptySpace() if spaceRequired else _context().space) if node.isAsync else ''
@@ -1205,7 +1206,7 @@ class CodeGeneratorStatement:
         
         # export ExportClause[NoReference] FromClause 
         # export ExportClause 
-        if stmt.specifiers:
+        if stmt.specifiers is not None:
             if len(stmt.specifiers) == 0:
                 result = join(result, '{' + _context().space + '}')
             else:
@@ -1233,6 +1234,7 @@ class CodeGeneratorStatement:
                     'from' + _context().space,
                     # ModuleSpecifier
                     self.generateExpression(stmt.source, Precedence.Sequence, E_TTT),
+                    self.generateImportAttributes(stmt),
                     self.semicolon(flags)
                 ])
             else:
@@ -1245,9 +1247,11 @@ class CodeGeneratorStatement:
         return [
             'export' + _context().space,
             '*' + _context().space,
+            ['as', noEmptySpace(), self.generateExpression(stmt.exported, Precedence.Primary, E_TTT), noEmptySpace()] if stmt.exported else '',
             'from' + _context().space,
             # ModuleSpecifier
             self.generateExpression(stmt.source, Precedence.Sequence, E_TTT),
+            self.generateImportAttributes(stmt),
             self.semicolon(flags)
         ]
         
@@ -1339,6 +1343,7 @@ class CodeGeneratorStatement:
                 _context().space,
                 # ModuleSpecifier
                 self.generateExpression(stmt.source, Precedence.Sequence, E_TTT),
+                self.generateImportAttributes(stmt),
                 self.semicolon(flags)
             ]
             
@@ -1400,6 +1405,7 @@ class CodeGeneratorStatement:
             'from' + _context().space,
             # ModuleSpecifier
             self.generateExpression(stmt.source, Precedence.Sequence, E_TTT),
+            self.generateImportAttributes(stmt),
             self.semicolon(flags)
         ])
         return result
@@ -2051,6 +2057,23 @@ class CodeGeneratorExpression:
             ]
 
         return join(result, fragment)
+
+    def PrivateIdentifier(self, expr, precedence, flags):
+        return generateIdentifier(expr)
+
+    def PropertyDefinition(self, expr, precedence, flags):
+        result = ['static', noEmptySpace()] if expr.static else []
+        result.append(self.generatePropertyKey(expr.key, expr.computed))
+        if expr.value is not None:
+            result.extend([_context().space, '=', _context().space,
+                           self.generateExpression(expr.value, Precedence.Assignment, E_TTT)])
+        # Always terminate fields: newlines can disappear in compact output.
+        result.append(';')
+        return result
+
+    def StaticBlock(self, expr, precedence, flags):
+        block = SimpleObj({'type': Syntax.BlockStatement, 'body': expr.body})
+        return ['static', _context().space, self.generateStatement(block, S_TFFF)]
     
     def Property(self, expr, precedence, flags):
         if expr.kind == 'get' or expr.kind == 'set':
@@ -2192,23 +2215,29 @@ class CodeGeneratorExpression:
     
     def ImportSpecifier(self, expr, precedence, flags):
         imported = expr.imported
-        result = [ imported.name ]
+        result = [self.generateExpression(imported, Precedence.Primary, E_TTT)]
         local = expr.local
-        if local and local.name != imported.name:
+        if local and (imported.type != Syntax.Identifier or local.name != imported.name):
             result.append(noEmptySpace() + 'as' + noEmptySpace() + generateIdentifier(local))
 
         return result
     
     def ExportSpecifier(self, expr, precedence, flags):
         local = expr.local
-        result = [ local.name ]
+        result = [self.generateExpression(local, Precedence.Primary, E_TTT)]
         exported = expr.exported
-        if exported and exported.name != local.name:
-            result.append(noEmptySpace() + 'as' + noEmptySpace() + generateIdentifier(exported))
+        if exported and (local.type != Syntax.Identifier or exported.type != Syntax.Identifier or exported.name != local.name):
+            result.extend([noEmptySpace(), 'as', noEmptySpace(),
+                           self.generateExpression(exported, Precedence.Primary, E_TTT)])
 
         return result
     
     def Literal(self, expr, precedence, flags):
+
+        if expr.bigint is not None:
+            if not isinstance(expr.bigint, str) or not re.fullmatch(r'(0|[1-9][0-9]*)', expr.bigint):
+                raise ValueError('Literal.bigint must contain canonical nonnegative decimal digits')
+            return expr.bigint + 'n'
 
         if hasattr(expr, 'raw') and _context().parse and _context().extra.raw:
             try:
@@ -2223,19 +2252,6 @@ class CodeGeneratorExpression:
 
         if expr.regex:
             return '/' + expr.regex.pattern + '/' + expr.regex.flags
-
-        """
-        # TODO: Approach needed?
-
-        if (typeof expr.value == 'bigint'):
-            return expr.value.toString() + 'n'
-
-        # `expr.value` can be null if `expr.bigint` exists. We need to check
-        # `expr.bigint` first.
-        if (expr.bigint):
-            return expr.bigint + 'n'
-
-        """
 
         if expr.value is None:
             return 'null'
@@ -2347,10 +2363,89 @@ class CodeGeneratorExpression:
         return parenthesize([
             'import(',
             (expr.source and self.generateExpression(expr.source, Precedence.Assignment, E_TTT) or ''),
+            [',' + _context().space, self.generateExpression(expr.options, Precedence.Assignment, E_TTT)] if expr.options is not None else '',
             ')'
         ], Precedence.Call, precedence)
 
+    def JSXIdentifier(self, expr, precedence, flags):
+        return expr.name
+
+    def JSXNamespacedName(self, expr, precedence, flags):
+        return [self.generateExpression(expr.namespace, Precedence.Primary, E_TTT), ':',
+                self.generateExpression(expr.name, Precedence.Primary, E_TTT)]
+
+    def JSXMemberExpression(self, expr, precedence, flags):
+        return [self.generateExpression(expr.object, Precedence.Primary, E_TTT), '.',
+                self.generateExpression(expr.property, Precedence.Primary, E_TTT)]
+
+    def JSXAttribute(self, expr, precedence, flags):
+        result = [self.generateExpression(expr.name, Precedence.Primary, E_TTT)]
+        if expr.value is not None:
+            result.append('=')
+            if expr.value.type == Syntax.Literal:
+                result.extend(['"', html.escape(expr.value.value, quote=True), '"'])
+            else:
+                result.append(self.generateExpression(expr.value, Precedence.Primary, E_TTT))
+        return result
+
+    def JSXSpreadAttribute(self, expr, precedence, flags):
+        return ['{...', self.generateExpression(expr.argument, Precedence.Assignment, E_TTT), '}']
+
+    def JSXExpressionContainer(self, expr, precedence, flags):
+        return ['{', self.generateExpression(expr.expression, Precedence.Sequence, E_TTT), '}']
+
+    def JSXSpreadChild(self, expr, precedence, flags):
+        return ['{...', self.generateExpression(expr.expression, Precedence.Assignment, E_TTT), '}']
+
+    def JSXEmptyExpression(self, expr, precedence, flags):
+        return ''
+
+    def JSXText(self, expr, precedence, flags):
+        if expr.raw is not None:
+            return expr.raw
+        return html.escape(expr.value, quote=False).replace('{', '&#123;').replace('}', '&#125;')
+
+    def JSXOpeningElement(self, expr, precedence, flags):
+        result = ['<', self.generateExpression(expr.name, Precedence.Primary, E_TTT)]
+        for attribute in expr.attributes:
+            result.extend([' ', self.generateExpression(attribute, Precedence.Primary, E_TTT)])
+        result.append(' />' if expr.selfClosing else '>')
+        return result
+
+    def JSXClosingElement(self, expr, precedence, flags):
+        return ['</', self.generateExpression(expr.name, Precedence.Primary, E_TTT), '>']
+
+    def JSXElement(self, expr, precedence, flags):
+        result = [self.generateExpression(expr.openingElement, Precedence.Primary, E_TTT)]
+        result.extend(self.generateExpression(child, Precedence.Primary, E_TTT) for child in expr.children)
+        if expr.closingElement is not None:
+            result.append(self.generateExpression(expr.closingElement, Precedence.Primary, E_TTT))
+        return parenthesize(result, Precedence.Primary, precedence)
+
+    def JSXOpeningFragment(self, expr, precedence, flags):
+        return '<>'
+
+    def JSXClosingFragment(self, expr, precedence, flags):
+        return '</>'
+
+    def JSXFragment(self, expr, precedence, flags):
+        return ['<>', [self.generateExpression(child, Precedence.Primary, E_TTT) for child in expr.children], '</>']
+
 class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
+
+    def generateImportAttributes(self, node):
+        attributes = node.attributes if node.attributes is not None else node.assertions
+        if not attributes:
+            return ''
+        result = [noEmptySpace(), 'with', _context().space, '{', _context().space]
+        for index, attribute in enumerate(attributes):
+            if index:
+                result.append(',' + _context().space)
+            result.extend([self.generateExpression(attribute.key, Precedence.Primary, E_TTT),
+                           ':' + _context().space,
+                           self.generateExpression(attribute.value, Precedence.Primary, E_TTT)])
+        result.extend([_context().space, '}'])
+        return result
 
     def restrictedArgument(self, node, precedence, flags):
         result = self.generateExpression(node, precedence, flags)
