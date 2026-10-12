@@ -58,6 +58,15 @@ and raw numeric spellings may normalize away. Regex descriptors contain JS
 `pattern`/`flags` source. Flag validation rejects duplicates, unknown flags
 and combined `u`/`v`; pattern grammar requires a JS-aware parser, not Python re.
 
+For strict JSON interchange, nonfinite numbers use the small ESTree extension
+`{'type':'Literal','value':None,'number':'Infinity','raw':'1e400'}` (or
+`number:'-Infinity'`). This distinguishes infinity from actual `null` while
+allowing `json.dumps(ast, allow_nan=False)`. Tags require a null value and
+cannot conflict with BigInt/regex descriptors or raw numeric spelling.
+Generation restores `1e400`/`-1e400`; JSON literal formatting emits `null`.
+The serializer can also describe `number:'NaN'`, but generation retains its
+explicit NaN rejection policy. Ordinary native float infinities remain supported.
+
 ## Options
 
 Formatting options belong under `format`, including `escapeless`:

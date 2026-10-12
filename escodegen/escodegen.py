@@ -523,6 +523,24 @@ def generateNumber(value):
         except (ValueError, OverflowError):
             return False
     return min((candidate for candidate in candidates if equivalent(candidate)), key=lambda text: (len(text), text))
+
+
+def decodeRawNumber(raw):
+    """Validate Number-literal spelling locally for tagged interchange values."""
+    if not isinstance(raw, str):
+        raise ValueError('Tagged Number raw spelling must be a string')
+    digits = r'[0-9](?:_?[0-9])*'
+    decimal = rf'[+-]?(?:{digits}(?:\.(?:{digits})?)?|\.{digits})(?:[eE][+-]?{digits})?'
+    if re.fullmatch(decimal, raw):
+        return float(raw.replace('_', ''))
+    for base, prefix, characters in [(16, 'xX', '0-9a-fA-F'), (8, 'oO', '0-7'), (2, 'bB', '01')]:
+        if re.fullmatch(rf'[+-]?0[{prefix}][{characters}](?:_?[{characters}])*', raw):
+            cleaned = raw.replace('_', '')
+            try:
+                return float(int(cleaned, base))
+            except OverflowError:
+                return -math.inf if cleaned.startswith('-') else math.inf
+    raise ValueError('Tagged Number raw spelling must be a numeric literal')
     
 # Generate valid RegExp expression.
 # This function is based on https://github.com/Constellation/iv Engine
@@ -2442,6 +2460,19 @@ class CodeGeneratorExpression:
         return result
     
     def Literal(self, expr, precedence, flags):
+
+        if expr.number is not None:
+            if expr.number not in ('Infinity', '-Infinity', 'NaN'):
+                raise ValueError('Literal.number must be Infinity, -Infinity or NaN')
+            if expr.value is not None or expr.bigint is not None or expr.regex is not None:
+                raise ValueError('Tagged Number requires value=None and no bigint/regex fields')
+            value = {'Infinity': math.inf, '-Infinity': -math.inf, 'NaN': math.nan}[expr.number]
+            if expr.raw is not None:
+                raw_value = decodeRawNumber(expr.raw)
+                if raw_value != value:
+                    raise ValueError('Literal.number conflicts with raw numeric value')
+            result = generateNumber(value)
+            return parenthesize(result, Precedence.Unary, precedence) if result.startswith('-') else result
 
         if expr.bigint is not None:
             if not isinstance(expr.bigint, str) or not re.fullmatch(r'(0|[1-9][0-9]*)', expr.bigint):

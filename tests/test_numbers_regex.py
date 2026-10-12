@@ -8,6 +8,30 @@ from escodegen import generate
 
 
 class NumberRegexTests(unittest.TestCase):
+    def test_json_safe_nonfinite_number_tags_and_conflicts(self):
+        for tag, raw, expected in [('Infinity', '1e400', '1e400'), ('-Infinity', '-1e400', '-1e400')]:
+            ast = {'type': 'Literal', 'value': None, 'number': tag, 'raw': raw}
+            encoded = json.dumps(ast, allow_nan=False)
+            self.assertEqual(generate(json.loads(encoded)), expected)
+            self.assertEqual(generate(ast, {'format': {'json': True}}), 'null')
+            if shutil.which('node'):
+                source = 'console.log(Object.is(' + generate(ast) + ',' + tag + '))'
+                process = subprocess.run(['node', '-e', source], text=True, capture_output=True, check=True)
+                self.assertEqual(process.stdout.strip(), 'true')
+        self.assertEqual(generate({'type': 'Literal', 'value': None}), 'null')
+        cases = [
+            ({'type': 'Literal', 'value': None, 'number': 'wrong'}, 'Literal.number'),
+            ({'type': 'Literal', 'value': 1, 'number': 'Infinity'}, 'requires value=None'),
+            ({'type': 'Literal', 'value': None, 'number': 'Infinity', 'bigint': '1'}, 'no bigint/regex'),
+            ({'type': 'Literal', 'value': None, 'number': 'Infinity', 'raw': 'null'}, 'numeric literal'),
+            ({'type': 'Literal', 'value': None, 'number': 'Infinity', 'raw': '-1e400'}, 'conflicts'),
+            ({'type': 'Literal', 'value': None, 'number': 'Infinity', 'raw': '1'}, 'conflicts'),
+            ({'type': 'Literal', 'value': None, 'number': 'NaN'}, 'cannot be NaN'),
+        ]
+        for ast, message in cases:
+            with self.subTest(ast=ast), self.assertRaisesRegex(ValueError, message):
+                generate(ast)
+
     def test_number_domain_and_negative_zero_policy(self):
         for value in [10 ** 1000]:
             with self.assertRaisesRegex(ValueError, 'bigint'):
