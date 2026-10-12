@@ -541,6 +541,37 @@ def decodeRawNumber(raw):
             except OverflowError:
                 return -math.inf if cleaned.startswith('-') else math.inf
     raise ValueError('Tagged Number raw spelling must be a numeric literal')
+
+
+def jsxTextValue(raw):
+    # HTML4 references, with semicolons, are the JSX interchange contract.
+    # Normalize physical CRLF before decoding so &#13;&#10; remains two units.
+    def entity(match):
+        text = match.group(1)
+        if text.startswith('#'):
+            try:
+                point = int(text[2:], 16) if text.startswith('#x') else int(text[1:])
+            except ValueError:
+                return match.group(0)
+            return chr(point) if 0 <= point <= 0x10ffff else match.group(0)
+        return html.entities.entitydefs.get(text, match.group(0))
+    return re.sub(r'&(#x[0-9A-Fa-f]+|#[0-9]+|[A-Za-z][A-Za-z0-9]*);', entity, raw.replace('\r\n', '\n'))
+
+
+def escapeJSXString(value, attribute=False):
+    if not isinstance(value, str):
+        raise ValueError('JSX text and literal attribute values must be strings')
+    escaped = html.escape(value, quote=attribute)
+    result = []
+    for character in escaped:
+        code = ord(character)
+        if code < 0x20 or 0xd800 <= code <= 0xdfff or code in (0x2028, 0x2029):
+            result.append(f'&#x{code:X};')
+        elif not attribute and character in '{}':
+            result.append(f'&#{code};')
+        else:
+            result.append(character)
+    return ''.join(result)
     
 # Generate valid RegExp expression.
 # This function is based on https://github.com/Constellation/iv Engine
@@ -2651,7 +2682,7 @@ class CodeGeneratorExpression:
         if expr.value is not None:
             result.append('=')
             if expr.value.type == Syntax.Literal:
-                result.extend(['"', html.escape(expr.value.value, quote=True), '"'])
+                result.extend(['"', escapeJSXString(expr.value.value, attribute=True), '"'])
             else:
                 result.append(self.generateExpression(expr.value, Precedence.Primary, E_TTT))
         return result
@@ -2669,9 +2700,13 @@ class CodeGeneratorExpression:
         return ''
 
     def JSXText(self, expr, precedence, flags):
-        if expr.raw is not None:
-            return expr.raw
-        return html.escape(expr.value, quote=False).replace('{', '&#123;').replace('}', '&#125;')
+        if not isinstance(expr.value, str):
+            raise ValueError('JSXText.value must be a string')
+        if _context().extra.raw and isinstance(expr.raw, str) and not any(0xd800 <= ord(character) <= 0xdfff for character in expr.raw):
+            raw_value = jsxTextValue(expr.raw)
+            if raw_value.encode('utf-16-le', 'surrogatepass') == expr.value.encode('utf-16-le', 'surrogatepass'):
+                return expr.raw
+        return escapeJSXString(expr.value)
 
     def JSXOpeningElement(self, expr, precedence, flags):
         result = ['<', self.generateExpression(expr.name, Precedence.Primary, E_TTT)]

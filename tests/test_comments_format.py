@@ -121,6 +121,20 @@ class CommentFormatTests(unittest.TestCase):
             {'type': 'JSXSpreadChild', 'expression': {'type': 'Identifier', 'name': 'xs'}}]}
         self.assertEqual(generate(ast), '<>&lt;&amp;&#123;text&#125;{...xs}</>')
 
+    def test_jsx_text_raw_reuse_cannot_override_current_value_or_raw_option(self):
+        self.assertEqual(generate({'type': 'JSXText', 'value': 'new & <', 'raw': 'old'}), 'new &amp; &lt;')
+        ast = {'type': 'JSXText', 'value': '&', 'raw': '&#38;'}
+        self.assertEqual(generate(ast), '&#38;')
+        self.assertEqual(generate(ast, {'raw': False}), '&amp;')
+
+    def test_jsx_attributes_with_surrogates_and_controls_are_utf8_safe(self):
+        ast = {'type': 'JSXAttribute', 'name': {'type': 'JSXIdentifier', 'name': 'value'},
+               'value': {'type': 'Literal', 'value': '\ud800\0\U0001f600'}}
+        code = generate(ast)
+        code.encode('utf-8')
+        self.assertIn('&#xD800;', code)
+        self.assertIn('&#x0;', code)
+
 
 if __name__ == '__main__':
     unittest.main()
