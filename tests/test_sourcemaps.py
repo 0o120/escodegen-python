@@ -47,7 +47,7 @@ class SourceMapTests(unittest.TestCase):
             column = 5 if compact else 0  # emoji occupies two UTF-16 units.
             payload = {'map': result.map.toJSON(), 'positions': [
                 {'line': 1, 'column': 0}, {'line': line, 'column': column}]}
-            process = subprocess.run(['node', '-e', script], input=json.dumps(payload), capture_output=True, text=True, check=True)
+            process = subprocess.run(['node', '-e', script], input=json.dumps(payload), capture_output=True, text=True, encoding='utf-8', check=True)
             positions = json.loads(process.stdout)
             self.assertEqual([(p['line'], p['column']) for p in positions], [(3, 8), (9, 15)])
             self.assertEqual(positions[1]['name'], 'answer')

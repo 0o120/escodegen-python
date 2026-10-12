@@ -18,7 +18,7 @@ REFERENCE = Path(os.environ.get('ESCODEGEN_REFERENCE_NODE_MODULES',
 def parse_many(jobs):
     env = dict(os.environ, ESCODEGEN_REFERENCE_NODE_MODULES=str(REFERENCE))
     process = subprocess.run(['node', str(HERE / 'reference.js')], input=json.dumps(jobs),
-                             capture_output=True, text=True, env=env)
+                             capture_output=True, text=True, encoding='utf-8', env=env)
     if process.returncode:
         raise AssertionError(process.stderr)
     return json.loads(process.stdout)
