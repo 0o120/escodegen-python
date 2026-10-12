@@ -660,7 +660,7 @@ def toSourceNodeWhenNeeded(generated, node=None, toString=False):
             node = SimpleObj()
             
     if node.loc is None:
-        sn = SourceNode(None, None, _context().sourceMap, generated, node.name or None)
+        sn = SourceNode(None, None, None, generated, node.name or None)
     else:
         if node.loc.start is None:
             raise ValueError('source-map loc must contain a start position')
