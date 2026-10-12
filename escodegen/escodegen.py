@@ -1188,6 +1188,7 @@ def addComments(stmt, result):
                 result.append(generateComment(comment))
             
             prevRange = _range
+            previousComment = comment
         
             i = 1
             while i < len(stmt.leadingComments):
@@ -1196,15 +1197,20 @@ def addComments(stmt, result):
                 
                 infix = _context().sourceCode[prevRange[1]:_range[0]]
                 count = len(re.compile('\n').findall(infix) or [])
+                if count == 0 and previousComment.type == 'Line' and not endsWithLineTerminator(previousComment.value):
+                    count = 1
                 result.append(stringRepeat('\n', count))
                 result.append(addIndent(generateComment(comment)))
 
                 prevRange = _range
+                previousComment = comment
                 i += 1
 
             extRange = comment.extendedRange or comment.range
             suffix = _context().sourceCode[_range[1]:extRange[1]]
             count = len(re.compile('\n').findall(suffix) or [])
+            if count == 0 and comment.type == 'Line' and not endsWithLineTerminator(comment.value):
+                count = 1
             result.append(stringRepeat('\n', count))
         else:
             comment = stmt.leadingComments[0]
