@@ -1485,11 +1485,13 @@ class CodeGeneratorStatement:
                     code == 0x2A or # '*'
                     esutils.code.isLineTerminator(code))
                     
-        if (flags & F_DIRECTIVE_CTX and stmt.expression.type == Syntax.Literal and
+        if (stmt.expression.type == Syntax.Literal and
                 stmt.expression.value == 'use strict' and stmt.directive != 'use strict'):
             # An escaped directive is a string in the prologue, but is not a
             # strict-mode directive. Retain that distinction even without raw.
-            result = ["'use\\x20strict'"]
+            quote = '"' if _context().quotes == 'double' else "'"
+            escaped_space = '\\u0020' if _context().json else '\\x20'
+            result = [quote + 'use' + escaped_space + 'strict' + quote]
         else:
             result = [self.generateExpression(stmt.expression, Precedence.Sequence, E_TTT)]
         # 12.4 '{', 'function', 'class' is not allowed in this position.

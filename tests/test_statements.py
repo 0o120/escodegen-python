@@ -86,6 +86,16 @@ class StatementTests(unittest.TestCase):
             ast = {'type': 'FunctionDeclaration', 'id': ident('f'), 'params': [], 'body': body}
             self.assertEqual(execute(generate(ast) + 'console.log(JSON.stringify(f()))'), directive == 'use strict')
 
+    def test_escaped_directives_respect_quote_and_json_options_when_generated_alone(self):
+        ast = statement(lit('use strict'))
+        ast['directive'] = r'use\u0020strict'
+        for is_json in [False, True]:
+            code = generate(ast, {'format': {'quotes': 'double', 'json': is_json}})
+            self.assertTrue(code.startswith('"'))
+            if is_json:
+                self.assertEqual(json.loads(code[:-1]), 'use strict')
+            self.assertNotEqual(code, '"use strict";')
+
 
 if __name__ == '__main__':
     unittest.main()
