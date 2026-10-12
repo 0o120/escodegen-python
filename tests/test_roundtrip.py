@@ -51,6 +51,7 @@ SCRIPTS = [
     'const rounded=1000000000000000100; const hex=0x20000000000001;',
     'const a=/(?<x>a)\\k<x>/dgu; const b=/[\\p{ASCII}&&\\p{Letter}]/v;',
     '(let[a])=b; (let[a])(); async;',
+    r'var async; for(\u0061sync of xs); for((let[a]);;); for((let[a]) of xs);',
     'const element=<><UI.Widget title="&quot;\\&amp;" enabled {...props}>text &amp;'
     '<ns:item>{x}</ns:item>{/*comment*/}</UI.Widget></>;',
 ]

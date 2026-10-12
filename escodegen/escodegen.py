@@ -1802,7 +1802,10 @@ class CodeGeneratorStatement:
                     result.append(that.generateStatement(stmt.init, S_FFFF))
                 else:
                     # F_ALLOW_IN becomes false.
-                    result.append(that.generateExpression(stmt.init, Precedence.Sequence, E_FTT))
+                    fragment = that.generateExpression(stmt.init, Precedence.Sequence, E_FTT)
+                    if that.startsWithLetBracket(stmt.init):
+                        fragment = ['(', fragment, ')']
+                    result.append(fragment)
                     result.append(';')
             else:
                 result.append(';')
@@ -2809,7 +2812,11 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
                     result.append(that.generateStatement(stmt.left.declarations[0], S_FFFF))
                 withIndent(fn2)
             else:
-                result.append(that.generateExpression(stmt.left, Precedence.Call, E_TTT))
+                fragment = that.generateExpression(stmt.left, Precedence.Call, E_TTT)
+                if operator == 'of' and (that.startsWithLetBracket(stmt.left) or
+                        (stmt.left.type == Syntax.Identifier and stmt.left.name in ('let', 'async'))):
+                    fragment = ['(', fragment, ')']
+                result.append(fragment)
 
             result = join(result, operator)
             result = [join(
