@@ -1213,6 +1213,14 @@ class CodeGeneratorStatement:
                         result = ['{']
 
                     result.append(content)
+
+            if (_context().extra.comment and stmt.innerComments and
+                    not (len(stmt.body) == 0 and _context().preserveBlankLines)):
+                for comment in stmt.innerComments:
+                    fragment = toSourceNodeWhenNeeded(addIndent(generateComment(comment)), comment)
+                    result.append(fragment)
+                    if not endsWithLineTerminator(toSourceNodeWhenNeeded(fragment, toString=True)):
+                        result.append(_context().newline)
          
             bodyFlags = S_TFFF
             if flags & F_FUNC_BODY:
@@ -2270,7 +2278,8 @@ class CodeGeneratorExpression:
         return result
 
     def StaticBlock(self, expr, precedence, flags):
-        block = SimpleObj({'type': Syntax.BlockStatement, 'body': expr.body})
+        block = SimpleObj({'type': Syntax.BlockStatement, 'body': expr.body,
+                           'innerComments': expr.innerComments})
         return ['static', _context().space, self.generateStatement(block, S_TFFF)]
     
     def Property(self, expr, precedence, flags):

@@ -84,7 +84,8 @@ legacy `indent`/`base`. Raw reuse requires an equivalent literal from `parse`.
 text is trusted JavaScript. Escaped strict directives retain non-strict
 semantics. Inputs are not modified.
 
-Comments must be attached as `leadingComments`/`trailingComments`; this package
+Comments must be attached as `leadingComments`/`trailingComments` or block
+`innerComments`; this package
 does not expose upstream `attachComments`. `preserveBlankLines` requires
 `sourceCode`, statement/comment `range` and comment `extendedRange` in UTF-16
 units; invalid or split-surrogate ranges raise `ValueError`. `Program.hashbang`

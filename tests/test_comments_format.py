@@ -73,6 +73,14 @@ class CommentFormatTests(unittest.TestCase):
         code = generate(ast, {'comment': True})
         self.assertIn('async /*inline*/ f()', code)
 
+    def test_inner_comments_survive_empty_blocks_without_duplication(self):
+        ast = {'type': 'BlockStatement', 'body': [], 'range': [0, 13],
+               'innerComments': [{'type': 'Block', 'value': 'license', 'range': [1, 12]}]}
+        for options in [{}, {'format': {'compact': True}},
+                        {'sourceCode': '{/*license*/}', 'format': {'preserveBlankLines': True}}]:
+            code = generate(ast, dict(options, comment=True))
+            self.assertEqual(code.count('/*license*/'), 1)
+
     def test_jsx_spread_children_and_text_escaping(self):
         ast = {'type': 'JSXFragment', 'children': [
             {'type': 'JSXText', 'value': '<&{text}'},
