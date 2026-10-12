@@ -42,7 +42,7 @@ from .sourcemap import SourceNode
 
 
 from contextvars import ContextVar
-from types import SimpleNamespace
+from types import GetSetDescriptorType, SimpleNamespace
 
 _generation_context = ContextVar('escodegen_context')
 
@@ -98,22 +98,23 @@ _NODE_CHILD_FIELDS = {
 
 
 def validateNodeFields(node):
-    if not isinstance(node, SimpleObj) or not isinstance(node.type, str):
+    if type(node) not in _context().nodeTypes or not isinstance(node.type, str):
         raise ValueError('Expected an ESTree node with a string type field')
     field = _NODE_LIST_FIELDS.get(node.type)
-    if field is not None and not isinstance(node[field], list):
+    if field is not None and not isinstance(getattr(node, field), list):
         raise ValueError(f'{node.type}.{field} must be a list')
-    if node.type in ('SequenceExpression', 'VariableDeclaration') and not node[field]:
+    if node.type in ('SequenceExpression', 'VariableDeclaration') and not getattr(node, field):
         raise ValueError(f'{node.type}.{field} cannot be empty')
     for field in _NODE_CHILD_FIELDS.get(node.type, ()):
-        if not isinstance(node[field], SimpleObj) or not isinstance(node[field].type, str):
+        child = getattr(node, field)
+        if type(child) not in _context().nodeTypes or not isinstance(child.type, str):
             raise ValueError(f'{node.type}.{field} must contain an ESTree node')
-    if node.type == 'Literal' and 'value' not in node and node.regex is None and node.bigint is None:
+    if node.type == 'Literal' and 'value' not in vars(node) and node.regex is None and node.bigint is None:
         raise ValueError('Literal.value is required; use an explicit None for null')
 
 def generate(node, options=None):
     """Generate without mutating input ASTs or sharing formatting state."""
-    context = SimpleNamespace(activeNodes=set(), identifierNames=set())
+    context = SimpleNamespace(activeNodes=set(), identifierNames=set(), nodeTypes={SimpleObj})
     token = _generation_context.set(context)
     try:
         return _generate(node, options)
@@ -432,6 +433,98 @@ class SimpleObj:
             # The recursive closure otherwise retains comment containers
             # (and copied nodes) until cyclic garbage collection runs.
             adapt = None
+
+
+def prepareNativeGraph(node, containers):
+    """Use ordinary attribute ASTs read-only when no normalization is needed.
+
+    The public adapter remains a snapshot. This internal fast path requires
+    plain instance dictionaries, no descriptors or custom attribute reads,
+    and a missing-attribute implementation that is exactly ``return None``.
+    All fields are inspected so alias conflicts in metadata remain errors.
+    """
+    scalarTypes = (str, int, float, bool, type(None))
+    if type(node) in scalarTypes or type(node) in (dict, list, tuple):
+        return False
+    classes = {}
+    declarations = {}
+    seen = {}
+    pending = [node]
+    pureGetter = SimpleObj.__getattr__.__code__
+    while pending:
+        value = pending.pop()
+        cls = type(value)
+        if cls in scalarTypes:
+            continue
+        identity = id(value)
+        if identity in seen:
+            continue
+        seen[identity] = True
+        if cls is list:
+            for item in value:
+                if type(item) not in scalarTypes:
+                    pending.append(item)
+            continue
+        compatible = classes.get(cls)
+        if compatible is None:
+            getter = getattr(cls, '__getattr__', None)
+            code = getattr(getter, '__code__', None)
+            compatible = (not issubclass(cls, Mapping) and
+                          cls.__dictoffset__ != 0 and
+                          cls.__getattribute__ is object.__getattribute__ and
+                          code is not None and code.co_code == pureGetter.co_code and
+                          code.co_consts == pureGetter.co_consts and not code.co_freevars and
+                          code.co_argcount == 2 and code.co_kwonlyargcount == 0 and
+                          not (code.co_flags & 12))
+            if compatible:
+                for base in cls.__mro__:
+                    simple = declarations.get(base)
+                    if simple is None:
+                        declared = vars(base)
+                        dictionary = declared.get('__dict__')
+                        simple = ((dictionary is None or type(dictionary) is GetSetDescriptorType) and
+                                  (not any(key in declared for key in ('__call__', '__bool__', '__len__')) or
+                                   issubclass(base, SimpleObj)) and
+                                  not any(not key.startswith('_') and not callable(field) and
+                                          not isinstance(field, (staticmethod, classmethod))
+                                          for key, field in declared.items()))
+                        declarations[base] = simple
+                    if not simple:
+                        compatible = False
+                        break
+            classes[cls] = compatible
+        if not compatible:
+            return False
+        fields = value.__dict__
+        if not fields and not isinstance(value, SimpleObj):
+            return False
+        nodeType = fields.get('type')
+        if nodeType is not None and type(nodeType) is not str:
+            return False
+        if 'async' in fields:
+            if 'isAsync' not in fields:
+                return False
+            if type(fields['async']) not in scalarTypes or type(fields['isAsync']) not in scalarTypes:
+                return False
+            if fields['async'] != fields['isAsync']:
+                raise ValueError('Conflicting async/isAsync AST fields')
+        if 'await' in fields:
+            if 'allowAwait' not in fields:
+                return False
+            if type(fields['await']) not in scalarTypes or type(fields['allowAwait']) not in scalarTypes:
+                return False
+            if fields['await'] != fields['allowAwait']:
+                raise ValueError('Conflicting await/allowAwait AST fields')
+        if nodeType in ('FieldDefinition', 'Hashbang') or fields.get('hashbang'):
+            return False
+        if ('comments' in fields or 'leadingComments' in fields or
+                'trailingComments' in fields or 'innerComments' in fields):
+            containers.append(value)
+        for item in fields.values():
+            if type(item) not in scalarTypes:
+                pending.append(item)
+    _context().nodeTypes.update(cls for cls, compatible in classes.items() if compatible)
+    return True
     
 def getDefaultOptions():
     # default options
@@ -915,18 +1008,18 @@ class UTF16Source:
 def validateSourceRanges(node):
     seen = set()
     def visit(value):
-        if isinstance(value, SimpleObj):
+        if type(value) in _context().nodeTypes:
             if id(value) in seen:
                 return
             seen.add(id(value))
             for field in ('range', 'extendedRange'):
-                span = value[field]
+                span = getattr(value, field)
                 if span is not None:
                     if not isinstance(span, list) or len(span) != 2:
                         raise ValueError(f'{field} must contain two UTF-16 offsets')
                     _context().sourceCode.validate(*span)
-            for key in value:
-                visit(value[key])
+            for item in vars(value).values():
+                visit(item)
         elif isinstance(value, list):
             if id(value) in seen:
                 return
@@ -940,15 +1033,18 @@ def extractHashbang(node, containers):
     hashbang = node.hashbang if node.type == Syntax.Program else None
     for value in containers:
         for key in ('comments', 'leadingComments', 'trailingComments', 'innerComments'):
-            comments = value[key]
+            comments = getattr(value, key)
             if comments:
+                marked = False
                 for comment in comments:
                     if comment.hashbang or comment.type == 'Hashbang':
                         text = comment.value.removeprefix('#!')
                         if hashbang is not None and hashbang != text:
                             raise ValueError('Conflicting Program/comment hashbang metadata')
                         hashbang = text
-                value[key] = [comment for comment in comments if not comment.hashbang and comment.type != 'Hashbang']
+                        marked = True
+                if marked:
+                    value[key] = [comment for comment in comments if not comment.hashbang and comment.type != 'Hashbang']
     if hashbang is not None and (not isinstance(hashbang, str) or hasLineTerminator(hashbang)):
         raise ValueError('Program.hashbang must contain one line excluding #!')
     return hashbang
@@ -1150,7 +1246,7 @@ def generateVerbatimString(string):
     return result
 
 def generateVerbatim(expr, precedence):
-    verbatim = expr[_context().extra.verbatim]
+    verbatim = getattr(expr, _context().extra.verbatim)
     if isinstance(verbatim, str):
         result = parenthesize(generateVerbatimString(verbatim), Precedence.Sequence, precedence)
     else:
@@ -1191,7 +1287,7 @@ def generateMethodPrefix(prop):
 
 def generateInternal(node):
 
-    if not isinstance(node, SimpleObj) or not isinstance(node.type, str):
+    if type(node) not in _context().nodeTypes or not isinstance(node.type, str):
         raise ValueError('Expected an ESTree node with a string type field')
 
     codegen = CodeGenerator()
@@ -1270,7 +1366,9 @@ def _generate(node, options=None):
     _context().extra = options
 
     hashbangContainers = []
-    node = SimpleObj.fromDict(node, hashbangContainers)
+    if _context().parse is not None or not prepareNativeGraph(node, hashbangContainers):
+        hashbangContainers.clear()
+        node = SimpleObj.fromDict(node, hashbangContainers)
     if _context().preserveBlankLines:
         validateSourceRanges(node)
     hashbang = extractHashbang(node, hashbangContainers)
@@ -3061,10 +3159,10 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
     @generationNode
     def generateExpression(self, expr, precedence, flags):
 
-        if not isinstance(expr, SimpleObj) or not isinstance(expr.type, str):
+        if type(expr) not in _context().nodeTypes or not isinstance(expr.type, str):
             raise ValueError('Expected an ESTree expression with a string type field')
 
-        if _context().extra.verbatim and expr[_context().extra.verbatim] is not None:
+        if _context().extra.verbatim and getattr(expr, _context().extra.verbatim) is not None:
             return generateVerbatim(expr, precedence)
 
         handler = getattr(self, expr.type, None)
@@ -3079,7 +3177,7 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
     
     @generationNode
     def generateStatement(self, stmt, flags):
-        if not isinstance(stmt, SimpleObj) or not isinstance(stmt.type, str):
+        if type(stmt) not in _context().nodeTypes or not isinstance(stmt.type, str):
             raise ValueError('Expected an ESTree statement with a string type field')
         handler = getattr(self, stmt.type, None)
         if handler is None or not hasattr(CodeGeneratorStatement, stmt.type):
