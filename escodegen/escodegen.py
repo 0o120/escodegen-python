@@ -32,7 +32,6 @@
 import re
 import math
 import esutils
-import html
 from collections.abc import Mapping
 from .sourcemap import SourceNode
 
@@ -41,11 +40,20 @@ from .sourcemap import SourceNode
 
 
 from contextvars import ContextVar
-from types import GetSetDescriptorType, SimpleNamespace
+from types import FunctionType, GetSetDescriptorType, MethodType, SimpleNamespace
 
 _generation_context = ContextVar('escodegen_context')
 
 _context = _generation_context.get
+
+# Every caller below obtains an exact code point through ord (or a zero
+# sentinel). Older compatible esutils versions retain the strict fallback.
+_identifierStart = getattr(esutils.code, '_identifier_start_from_ord', esutils.code.isIdentifierStart)
+_identifierPart = getattr(esutils.code, '_identifier_part_from_ord', esutils.code.isIdentifierPart)
+_whiteSpace = getattr(esutils.code, '_white_space_from_ord', esutils.code.isWhiteSpace)
+_lineTerminator = getattr(esutils.code, '_line_terminator_from_ord', esutils.code.isLineTerminator)
+_decimalDigit = getattr(esutils.code, '_decimal_digit_from_ord', esutils.code.isDecimalDigit)
+_asciiIdentifier = re.compile(r'[$A-Z_a-z][$0-9A-Z_a-z]*').fullmatch
 
 
 _NODE_LIST_FIELDS = {
@@ -420,6 +428,22 @@ class SimpleObj:
             adapt = None
 
 
+_UNSAFE_NATIVE_METHODS = frozenset((
+    '__class__', '__call__', '__bool__', '__len__', '__eq__', '__ne__', '__hash__',
+    '__lt__', '__le__', '__gt__', '__ge__', '__str__', '__format__',
+    '__getitem__', '__contains__', '__add__', '__radd__', '__sub__', '__rsub__',
+    '__mul__', '__rmul__', '__truediv__', '__rtruediv__', '__mod__', '__rmod__',
+    '__and__', '__rand__', '__or__', '__ror__', '__xor__', '__rxor__'))
+
+
+def _nativeDictionaryIterator(self):
+    return iter(self.__dict__)
+
+
+def _nativeLegacyIterator(self):
+    return self.__iter__
+
+
 def prepareNativeGraph(node, containers):
     """Use ordinary attribute ASTs read-only when no normalization is needed.
 
@@ -436,6 +460,8 @@ def prepareNativeGraph(node, containers):
     seen = {}
     pending = [node]
     pureGetter = SimpleObj.__getattr__.__code__
+    pureIterator = _nativeDictionaryIterator.__code__
+    legacyIterator = _nativeLegacyIterator.__code__
     while pending:
         value = pending.pop()
         cls = type(value)
@@ -444,17 +470,19 @@ def prepareNativeGraph(node, containers):
         identity = id(value)
         if identity in seen:
             continue
-        seen[identity] = True
         if cls is list:
+            before = len(pending)
             for item in value:
                 if type(item) not in scalarTypes:
                     pending.append(item)
+            if len(pending) != before:
+                seen[identity] = None
             continue
         compatible = classes.get(cls)
         if compatible is None:
             getter = getattr(cls, '__getattr__', None)
-            code = getattr(getter, '__code__', None)
-            compatible = (not issubclass(cls, Mapping) and
+            code = getter.__code__ if type(getter) in (FunctionType, MethodType) else None
+            compatible = (type(cls) is type and not issubclass(cls, Mapping) and
                           cls.__dictoffset__ != 0 and
                           cls.__getattribute__ is object.__getattribute__ and
                           code is not None and code.co_code == pureGetter.co_code and
@@ -468,11 +496,25 @@ def prepareNativeGraph(node, containers):
                         declared = vars(base)
                         dictionary = declared.get('__dict__')
                         simple = ((dictionary is None or type(dictionary) is GetSetDescriptorType) and
-                                  (not any(key in declared for key in ('__call__', '__bool__', '__len__')) or
-                                   issubclass(base, SimpleObj)) and
-                                  not any(not key.startswith('_') and not callable(field) and
-                                          not isinstance(field, (staticmethod, classmethod))
-                                          for key, field in declared.items()))
+                                  (base in (object, SimpleObj) or
+                                   not _UNSAFE_NATIVE_METHODS.intersection(declared)) and
+                                  not any(not key.startswith('_') and not (
+                                      base is SimpleObj or
+                                      (key in ('keys', 'items', 'toDict') and callable(field)) or
+                                      (key == 'Value' and isinstance(field, type)))
+                                      for key, field in declared.items()))
+                        iterator = declared.get('__iter__')
+                        if simple and iterator is not None and base is not SimpleObj:
+                            iteratorCode = iterator.__code__ if type(iterator) is FunctionType else None
+                            simple = (iteratorCode is not None and not iteratorCode.co_freevars and
+                                      iteratorCode.co_argcount == 1 and
+                                      ((iteratorCode.co_code == pureIterator.co_code and
+                                        iteratorCode.co_names == pureIterator.co_names and
+                                        iteratorCode.co_consts == pureIterator.co_consts and
+                                        iterator.__globals__.get('iter', iter) is iter) or
+                                       (iteratorCode.co_code == legacyIterator.co_code and
+                                        iteratorCode.co_names == legacyIterator.co_names and
+                                        iteratorCode.co_consts == legacyIterator.co_consts)))
                         declarations[base] = simple
                     if not simple:
                         compatible = False
@@ -505,9 +547,12 @@ def prepareNativeGraph(node, containers):
         if ('comments' in fields or 'leadingComments' in fields or
                 'trailingComments' in fields or 'innerComments' in fields):
             containers.append(value)
+        before = len(pending)
         for item in fields.values():
             if type(item) not in scalarTypes:
                 pending.append(item)
+        if len(pending) != before:
+            seen[identity] = True
     _context().nodeTypes.update(cls for cls, compatible in classes.items() if compatible)
     return True
     
@@ -566,7 +611,7 @@ def hasLineTerminator(string):
 
 def endsWithLineTerminator(string):
     length = len(string)
-    return length and esutils.code.isLineTerminator(ord(string[length - 1]))
+    return length and _lineTerminator(ord(string[length - 1]))
 
 def updateDeeply(target, override):
 
@@ -675,6 +720,7 @@ def decodeRawNumber(raw):
 
 
 def jsxTextValue(raw):
+    import html
     # HTML4 references, with semicolons, are the JSX interchange contract.
     # Normalize physical CRLF before decoding so &#13;&#10; remains two units.
     def entity(match):
@@ -690,6 +736,7 @@ def jsxTextValue(raw):
 
 
 def escapeJSXString(value, attribute=False):
+    import html
     if not isinstance(value, str):
         raise ValueError('JSX text and literal attribute values must be strings')
     escaped = html.escape(value, quote=attribute)
@@ -809,7 +856,7 @@ def escapeAllowedCharacter(code, nextChar):
     _hex = format(code, 'X')
     if (_context().json or code > 0xff):
         return '\\u' + '0000'[len(_hex):] + _hex
-    elif code == 0x0000 and not esutils.code.isDecimalDigit(nextChar if not nextChar is None else 0x00):
+    elif code == 0x0000 and not _decimalDigit(nextChar if not nextChar is None else 0x00):
         return '\\0'
     elif code == 0x000b: # \v
         return '\\x0b'
@@ -862,11 +909,11 @@ def escapeString(string):
         code = ord(character)
         if character == quote:
             result.append('\\' + character)
-        elif code == 0x5c or esutils.code.isLineTerminator(code):
+        elif code == 0x5c or _lineTerminator(code):
             result.append(escapeDisallowedCharacter(code))
         elif code < 0x20 or 0xd800 <= code <= 0xdfff or (
                 not _context().json and not _context().escapeless and code > 0x7e and
-                not esutils.code.isIdentifierPart(code)):
+                not _identifierPart(code)):
             nextChar = ord(string[i + 1]) if i + 1 < len(string) else None
             result.append(escapeAllowedCharacter(code, nextChar))
         elif _context().json and character == '/':
@@ -929,11 +976,11 @@ def join(left, right):
     rightCharCode = ord(rightSource[0])
     
     if ((leftCharCode == 0x2b or leftCharCode == 0x2d) and leftCharCode == rightCharCode or
-        esutils.code.isIdentifierPart(leftCharCode) and esutils.code.isIdentifierPart(rightCharCode) or
+        _identifierPart(leftCharCode) and _identifierPart(rightCharCode) or
         leftCharCode == 0x2f and rightCharCode == 0x69):
         return [left, noEmptySpace(), right]
-    elif (esutils.code.isWhiteSpace(leftCharCode) or esutils.code.isLineTerminator(leftCharCode) or
-            esutils.code.isWhiteSpace(rightCharCode) or esutils.code.isLineTerminator(rightCharCode)):
+    elif (_whiteSpace(leftCharCode) or _lineTerminator(leftCharCode) or
+            _whiteSpace(rightCharCode) or _lineTerminator(rightCharCode)):
         return [left, right]
     return [left, _context().space, right]
     
@@ -951,7 +998,7 @@ def withIndent(func):
 def calculateSpaces(string):
     i = len(string) - 1
     while i >= 0:
-        if esutils.code.isLineTerminator(ord(string[i])):
+        if _lineTerminator(ord(string[i])):
             break
         i -= 1
     return (len(string) - 1) - i
@@ -1044,7 +1091,7 @@ def adjustMultilineComment(value, specialBase):
     while i < len(array):
         line = array[i]
         j = 0
-        while j < len(line) and esutils.code.isWhiteSpace(ord(line[j])):
+        while j < len(line) and _whiteSpace(ord(line[j])):
             j += 1
         if spaces > j:
             spaces = j
@@ -1247,8 +1294,12 @@ def generateIdentifier(node):
     exact = type(name) is str
     known = _context().identifierNames
     if not exact or name not in known:
-        if not isinstance(name, str) or not name or not esutils.code.isIdentifierStart(ord(name[0])) or any(
-                not esutils.code.isIdentifierPart(ord(character)) for character in name[1:]):
+        if exact and name.isascii():
+            valid = _asciiIdentifier(name) is not None
+        else:
+            valid = (isinstance(name, str) and bool(name) and _identifierStart(ord(name[0])) and
+                     all(_identifierPart(ord(character)) for character in name[1:]))
+        if not valid:
             raise ValueError('Identifier.name must be a valid ECMAScript IdentifierName')
         if exact:
             known.add(name)
@@ -1351,7 +1402,7 @@ def _generate(node, options=None):
     _context().extra = options
 
     hashbangContainers = []
-    if _context().parse is not None or not prepareNativeGraph(node, hashbangContainers):
+    if _context().parse is not None or _context().extra.verbatim or not prepareNativeGraph(node, hashbangContainers):
         hashbangContainers.clear()
         node = SimpleObj.fromDict(node, hashbangContainers)
     if _context().preserveBlankLines:
@@ -1651,30 +1702,30 @@ class CodeGeneratorStatement:
                 return False
             code = ord(fragment[5])
             return (code == 0x7b or # '{'
-                    esutils.code.isWhiteSpace(code) or
-                    esutils.code.isLineTerminator(code))
+                    _whiteSpace(code) or
+                    _lineTerminator(code))
             
         def isFunctionPrefixed(fragment):
             if len(fragment) <= 8 or fragment[0:8] != 'function':
                 return False
             code = ord(fragment[8])
             return (code == 0x28 or # '('
-                    esutils.code.isWhiteSpace(code) or
+                    _whiteSpace(code) or
                     code == 0x2a or # '*'
-                    esutils.code.isLineTerminator(code))
+                    _lineTerminator(code))
 
         def isAsyncPrefixed(fragment):
             
             if len(fragment) <= 5 or fragment[0:5] != 'async':
                 return False
 
-            if not esutils.code.isWhiteSpace(ord(fragment[5])):
+            if not _whiteSpace(ord(fragment[5])):
                 return False
             
             i = 6
             iz = len(fragment)
             while i < iz:
-                if not esutils.code.isWhiteSpace(ord(fragment[i])):
+                if not _whiteSpace(ord(fragment[i])):
                     break
                 i += 1
 
@@ -1686,9 +1737,9 @@ class CodeGeneratorStatement:
 
             code = ord(fragment[i + 8])
             return (code == 0x28 or # '('
-                    esutils.code.isWhiteSpace(code) or
+                    _whiteSpace(code) or
                     code == 0x2A or # '*'
-                    esutils.code.isLineTerminator(code))
+                    _lineTerminator(code))
                     
         if (stmt.expression.type == Syntax.Literal and
                 stmt.expression.value == 'use strict' and stmt.directive != 'use strict'):
@@ -2190,7 +2241,7 @@ class CodeGeneratorExpression:
         leftSource = fragment # TODO fragment.toString()
 
         if (ord(leftSource[len(leftSource) - 1]) == 0x2f and # '/'
-                esutils.code.isIdentifierPart(ord(expr.operator[0]))):
+                _identifierPart(ord(expr.operator[0]))):
             result = [fragment, noEmptySpace(), expr.operator]
         else:
             result = join(fragment, expr.operator)
@@ -2288,7 +2339,7 @@ class CodeGeneratorExpression:
                 # we should add a floating point.
                 if (not '.' in fragment and
                         not bool(re.compile("[eExX]").search(fragment)) and
-                        esutils.code.isDecimalDigit(ord(fragment[len(fragment) - 1])) and
+                        _decimalDigit(ord(fragment[len(fragment) - 1])) and
                         not (len(fragment) >= 2 and ord(fragment[0]) == 48)  # '0'
                     ):
                     result.append(' ')
@@ -2326,7 +2377,7 @@ class CodeGeneratorExpression:
                 if (((  leftCharCode == 0x2B or # '+' 
                         leftCharCode == 0x2D # '-'
                         ) and leftCharCode == rightCharCode) or
-                        (esutils.code.isIdentifierPart(leftCharCode) and esutils.code.isIdentifierPart(rightCharCode))
+                        (_identifierPart(leftCharCode) and _identifierPart(rightCharCode))
                     ):
                     result.append(noEmptySpace())
                     result.append(fragment)
@@ -2877,8 +2928,8 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
         result = []
         cursor = start
         def whitespace(text):
-            return ''.join(character for character in text if esutils.code.isWhiteSpace(ord(character)) or
-                           esutils.code.isLineTerminator(ord(character)))
+            return ''.join(character for character in text if _whiteSpace(ord(character)) or
+                           _lineTerminator(ord(character)))
         for comment in comments if _context().extra.comment else []:
             if comment.range is None or comment.range[0] < cursor or comment.range[1] > end:
                 raise ValueError('Inner comment ranges must be ordered within their container')
@@ -3146,8 +3197,8 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
     
     def generateExpression(self, expr, precedence, flags):
         context = self.context
-        validateNodeFields(expr, context)
         identity = id(expr)
+        validateNodeFields(expr, context)
         active = context.activeNodes
         if identity in active:
             raise ValueError('Cyclic AST child graph detected')
@@ -3173,8 +3224,8 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
     
     def generateStatement(self, stmt, flags):
         context = self.context
-        validateNodeFields(stmt, context)
         identity = id(stmt)
+        validateNodeFields(stmt, context)
         active = context.activeNodes
         if identity in active:
             raise ValueError('Cyclic AST child graph detected')

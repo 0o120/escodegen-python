@@ -110,6 +110,43 @@ class NativeGenerationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Conflicting async/isAsync'):
             generate(node)
 
+    def test_operator_overloads_cannot_hide_an_invalid_import_name(self):
+        class EqualName(Native):
+            def __eq__(self, other):
+                return True
+        specifier = Native(type='ImportSpecifier', imported=Native(type='Identifier', name='x'),
+                           local=Native(type='Identifier', name=EqualName(value='x')))
+        node = Native(type='ImportDeclaration', specifiers=[specifier],
+                      source=Native(type='Literal', value='m'))
+        with self.assertRaisesRegex(ValueError, 'IdentifierName'):
+            generate(node)
+
+    def test_optional_field_methods_remain_absent_in_adapter_semantics(self):
+        class WithNumber(Native):
+            def number(self):
+                return 1
+        self.assertEqual(generate(WithNumber(type='Literal', value=1)), '1')
+
+    def test_class_proxies_preserve_mapping_adapter_precedence(self):
+        class Proxy(Native):
+            @property
+            def __class__(self):
+                return dict
+            def items(self):
+                return {'type': 'Literal', 'value': 9}.items()
+        self.assertEqual(generate(Proxy(type='Literal', value=2)), '9')
+
+    def test_callable_missing_attribute_code_metadata_is_not_trusted(self):
+        class Spoof:
+            __code__ = SimpleObj.__getattr__.__code__
+            def __call__(self, *args):
+                return True
+        class Node(Native):
+            __getattr__ = Spoof()
+        node = Node(type='FunctionExpression', params=[],
+                    body=Native(type='BlockStatement', body=[]))
+        self.assertEqual(generate(node), 'function () {\n}')
+
 
 if __name__ == '__main__':
     unittest.main()
