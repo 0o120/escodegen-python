@@ -57,6 +57,17 @@ class ContextTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Cyclic AST child graph'):
             generate(bad)
 
+    def test_raw_reuse_compares_semantic_types_regexes_and_negative_zero(self):
+        def parse(raw):
+            values = {'1': {'type': 'Literal', 'value': 1}, '0': {'type': 'Literal', 'value': 0},
+                      '/x/g': {'type': 'Literal', 'value': None, 'regex': {'pattern': 'x', 'flags': 'g'}}}
+            return {'type': 'Program', 'body': [{'type': 'ExpressionStatement', 'expression': values[raw]}]}
+        self.assertEqual(generate({'type': 'Literal', 'value': True, 'raw': '1'}, {'parse': parse}), 'true')
+        self.assertEqual(generate({'type': 'Literal', 'value': -0.0, 'raw': '0'}, {'parse': parse}), '-0')
+        self.assertEqual(generate({'type': 'Literal', 'value': None, 'raw': '/x/g', 'regex': {'pattern': 'y', 'flags': 'g'}},
+                                  {'parse': parse}), '/y/g')
+        self.assertEqual(generate({'type': 'Literal', 'value': 1, 'raw': '1'}, {'parse': parse}), '1')
+
 
 if __name__ == '__main__':
     unittest.main()

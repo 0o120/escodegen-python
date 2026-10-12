@@ -712,7 +712,6 @@ def addIndent(stmt):
     return [_context().base, stmt]
 
 def withIndent(func):
-    pass
     previousBase = _context().base
     _context().base += _context().indent
     try:
@@ -813,7 +812,6 @@ def extractHashbang(node):
     return hashbang
 
 def adjustMultilineComment(value, specialBase):
-    pass
     
     array = re.compile('\r\n|[\r\n]').split(value)
     spaces = 1.7976931348623157e+308
@@ -1047,9 +1045,6 @@ def generateInternal(node):
     raise ValueError('Unsupported ESTree node type: ' + node.type)
 
 def _generate(node, options=None):
-    pass
-    pass
-    pass
 
     defaultOptions = getDefaultOptions()
     
@@ -1160,7 +1155,7 @@ class CodeGeneratorStatement:
                 _range = stmt.range
                 if _range[1] - _range[0] > 2:
                     content = _context().sourceCode[_range[0] + 1:_range[1] - 1]
-                    if content[0] == '\n':
+                    if content.startswith('\n'):
                         result.clear()
                         result = ['{']
 
@@ -1179,7 +1174,7 @@ class CodeGeneratorStatement:
                         if stmt.body[0].leadingComments:
                             _range = stmt.body[0].leadingComments[0].extendedRange
                             content = _context().sourceCode[_range[0]:_range[1]]
-                            if content[0] == '\n':
+                            if content.startswith('\n'):
                                 result.clear()
                                 result = ['{']
 
@@ -2380,13 +2375,12 @@ class CodeGeneratorExpression:
                 raise ValueError('Literal.bigint must contain canonical nonnegative decimal digits')
             return expr.bigint + 'n'
 
-        if hasattr(expr, 'raw') and _context().parse and _context().extra.raw:
+        if expr.raw is not None and _context().parse and _context().extra.raw:
             try:
-                raw = _context().parse(expr.raw).body[0].expression
-                if raw.type == Syntax.Literal:
-                    if raw.value == expr.value:
-                        return expr.raw
-            except:
+                raw = SimpleObj.fromDict(_context().parse(expr.raw)).body[0].expression
+                if raw.type == Syntax.Literal and self.literalValuesEqual(raw, expr):
+                    return expr.raw
+            except Exception:
                 # not use raw property
                 pass
 
@@ -2577,6 +2571,16 @@ class CodeGeneratorExpression:
         return ['<>', [self.generateExpression(child, Precedence.Primary, E_TTT) for child in expr.children], '</>']
 
 class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
+
+    def literalValuesEqual(self, left, right):
+        if left.regex is not None or right.regex is not None:
+            return (left.regex is not None and right.regex is not None and
+                    left.regex.pattern == right.regex.pattern and left.regex.flags == right.regex.flags)
+        if left.value == 0 and right.value == 0 and type(left.value) in (int, float) and type(right.value) in (int, float):
+            return math.copysign(1, left.value) == math.copysign(1, right.value)
+        if type(left.value) in (int, float) and type(right.value) in (int, float):
+            return left.value == right.value
+        return type(left.value) is type(right.value) and left.value == right.value
 
     def generateImportAttributes(self, node):
         attributes = node.attributes if node.attributes is not None else node.assertions
