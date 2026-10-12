@@ -363,7 +363,7 @@ def stringRepeat(string, num):
     return result
 
 def hasLineTerminator(string):
-    return bool(re.compile("[\r\n]").search(string))
+    return bool(re.search('[\r\n\u2028\u2029]', string))
 
 def endsWithLineTerminator(string):
     length = len(string)
@@ -1254,7 +1254,7 @@ class CodeGeneratorStatement:
     def ExpressionStatement(self, stmt, flags):
 
         def isClassPrefixed(fragment):
-            if fragment[0:5] != 'class':
+            if len(fragment) <= 5 or fragment[0:5] != 'class':
                 return False
             code = ord(fragment[5])
             return (code == 0x7b or # '{'
@@ -1262,7 +1262,7 @@ class CodeGeneratorStatement:
                     esutils.code.isLineTerminator(code))
             
         def isFunctionPrefixed(fragment):
-            if fragment[0:8] != 'function':
+            if len(fragment) <= 8 or fragment[0:8] != 'function':
                 return False
             code = ord(fragment[8])
             return (code == 0x28 or # '('
@@ -1272,7 +1272,7 @@ class CodeGeneratorStatement:
 
         def isAsyncPrefixed(fragment):
             
-            if fragment[0:5] != 'async':
+            if len(fragment) <= 5 or fragment[0:5] != 'async':
                 return False
 
             if not esutils.code.isWhiteSpace(ord(fragment[5])):
@@ -1288,7 +1288,7 @@ class CodeGeneratorStatement:
             if i == iz:
                 return False
 
-            if fragment[i:i + 8] != 'function':
+            if len(fragment) <= i + 8 or fragment[i:i + 8] != 'function':
                 return False
 
             code = ord(fragment[i + 8])
@@ -1297,16 +1297,25 @@ class CodeGeneratorStatement:
                     code == 0x2A or # '*'
                     esutils.code.isLineTerminator(code))
                     
-        result = [self.generateExpression(stmt.expression, Precedence.Sequence, E_TTT)]
+        if (flags & F_DIRECTIVE_CTX and stmt.expression.type == Syntax.Literal and
+                stmt.expression.value == 'use strict' and stmt.directive != 'use strict'):
+            # An escaped directive is a string in the prologue, but is not a
+            # strict-mode directive. Retain that distinction even without raw.
+            result = ["'use\\x20strict'"]
+        else:
+            result = [self.generateExpression(stmt.expression, Precedence.Sequence, E_TTT)]
         # 12.4 '{', 'function', 'class' is not allowed in this position.
         # wrap expression with parentheses
         fragment = toSourceNodeWhenNeeded(result, toString=True)
-        if (ord(fragment[0]) == 0x7B or # '{'
+        if (fragment.startswith('{') or
                 # ObjectExpression
                 isClassPrefixed(fragment) or
                 isFunctionPrefixed(fragment) or
                 isAsyncPrefixed(fragment) or
-                (_context().directive and (flags & F_DIRECTIVE_CTX) and stmt.expression.type == Syntax.Literal and isinstance(stmt.expression.value, str))
+                bool(re.match(r'^let\s*\[', fragment)) or
+                (_context().directive and (flags & F_DIRECTIVE_CTX) and
+                 stmt.directive is None and stmt.expression.type == Syntax.Literal and
+                 isinstance(stmt.expression.value, str) and stmt.expression.value != 'use strict')
             ):
             result = ['(', result, ')' + self.semicolon(flags)]
         else:
@@ -1346,7 +1355,7 @@ class CodeGeneratorStatement:
             ])
             cursor += 1
             
-        if stmt.specifiers[cursor]:
+        if cursor < len(stmt.specifiers):
             if cursor != 0:
                 result.append(',')
 
@@ -1447,7 +1456,7 @@ class CodeGeneratorStatement:
     def ThrowStatement(self, stmt, flags):
         return [join(
             'throw',
-            self.generateExpression(stmt.argument, Precedence.Sequence, E_TTT)
+            self.restrictedArgument(stmt.argument, Precedence.Sequence, E_TTT)
         ), self.semicolon(flags)]
         
     def TryStatement(self, stmt, flags):
@@ -1570,8 +1579,11 @@ class CodeGeneratorStatement:
             bodyFlags |= F_SEMICOLON_OPT
 
         if stmt.alternate:
-            result.append(self.maybeBlock(stmt.consequent, S_TFFF))
-            result = self.maybeBlockSuffix(stmt.consequent, result)
+            consequent = stmt.consequent
+            if self.endsWithUnmatchedIf(consequent):
+                consequent = SimpleObj({'type': Syntax.BlockStatement, 'body': [consequent]})
+            result.append(self.maybeBlock(consequent, S_TFFF))
+            result = self.maybeBlockSuffix(consequent, result)
             if (stmt.alternate.type == Syntax.IfStatement):
                 result = join(result, ['else ', self.generateStatement(stmt.alternate, bodyFlags)])
             else:
@@ -1675,7 +1687,7 @@ class CodeGeneratorStatement:
         if stmt.argument:
             return [join(
                 'return',
-                self.generateExpression(stmt.argument, Precedence.Sequence, E_TTT)
+                self.restrictedArgument(stmt.argument, Precedence.Sequence, E_TTT)
             ), self.semicolon(flags)]
 
         return ['return' + self.semicolon(flags)]
@@ -1702,7 +1714,7 @@ class CodeGeneratorStatement:
             nonlocal result
             result.extend([
                 'with' + _context().space + '(',
-                that.generateExpression(stmt.test, Precedence.Sequence, E_TTT),
+                that.generateExpression(stmt.object, Precedence.Sequence, E_TTT),
                 ')'
             ])
         withIndent(fn)
@@ -1923,7 +1935,7 @@ class CodeGeneratorExpression:
         if expr.argument:
             result = join(
                 result,
-                self.generateExpression(expr.argument, Precedence.Yield, E_TTT)
+                self.restrictedArgument(expr.argument, Precedence.Yield, E_TTT)
             )
 
         return parenthesize(result, Precedence.Yield, precedence)
@@ -1948,7 +1960,7 @@ class CodeGeneratorExpression:
 
         return parenthesize(
             [
-                self.generateExpression(expr.argument, Precedence.Postfix, E_TTT),
+                self.restrictedArgument(expr.argument, Precedence.Postfix, E_TTT),
                 expr.operator
             ],
             Precedence.Postfix,
@@ -2339,6 +2351,20 @@ class CodeGeneratorExpression:
         ], Precedence.Call, precedence)
 
 class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
+
+    def restrictedArgument(self, node, precedence, flags):
+        result = self.generateExpression(node, precedence, flags)
+        if hasLineTerminator(toSourceNodeWhenNeeded(result, toString=True)):
+            return ['(', result, ')']
+        return result
+
+    def endsWithUnmatchedIf(self, node):
+        if node.type == Syntax.IfStatement:
+            return node.alternate is None or self.endsWithUnmatchedIf(node.alternate)
+        if node.type in (Syntax.ForStatement, Syntax.ForInStatement, Syntax.ForOfStatement,
+                         Syntax.WhileStatement, Syntax.WithStatement, Syntax.LabeledStatement):
+            return self.endsWithUnmatchedIf(node.body)
+        return False
     
     def maybeBlock(self, stmt, flags):
         that = self
@@ -2513,8 +2539,8 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
             result = addComments(stmt, result)
         
         fragment = toSourceNodeWhenNeeded(result, toString=True)
-        if stmt.type == Syntax.Program and (not _context().safeConcatenation) and _context().newline == '' and (fragment[len(fragment) - 1] == '\n'):
-            result = toSourceNodeWhenNeeded(result).replaceRight('\s+$', '') if _context().sourceMap else re.compile('\s+$').sub('', fragment)
+        if stmt.type == Syntax.Program and (not _context().safeConcatenation) and _context().newline == '' and fragment.endswith('\n'):
+            result = toSourceNodeWhenNeeded(result).replaceRight(r'\s+$', '') if _context().sourceMap else re.compile(r'\s+$').sub('', fragment)
         
         return toSourceNodeWhenNeeded(result, stmt)
 
