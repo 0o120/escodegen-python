@@ -78,6 +78,15 @@ class ContextTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, message):
                 generate(ast)
 
+    def test_excessive_nesting_has_an_actionable_resource_error(self):
+        ast = {'type': 'Literal', 'value': 1}
+        for _ in range(1500):
+            ast = {'type': 'UnaryExpression', 'operator': '!', 'argument': ast}
+        with self.assertRaisesRegex(ValueError, 'AST nesting exceeds'):
+            generate(ast)
+        # A failed operation must not poison the next call's context.
+        self.assertEqual(generate({'type': 'Literal', 'value': 1}), '1')
+
 
 if __name__ == '__main__':
     unittest.main()

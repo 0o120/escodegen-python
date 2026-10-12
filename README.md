@@ -117,6 +117,10 @@ Tests use pinned Acorn 8.19.0/JSX 5.3.2, Node semantic checks and source-map
 0.8.0. Coverage includes the upstream 2.1.0 corpus, every nested binary-operator
 pair, Unicode/controls, directives/comments and concurrency. This is a tested
 feature contract, not complete Test262 conformance.
+Generation currently traverses nested expressions recursively. Very deep
+ASTs can exceed Python's stack capacity and raise an actionable `ValueError`;
+the exact threshold depends on the tree and interpreter recursion limit.
+Generation does not change the process-wide recursion limit.
 
 Reports by [wjsw1781 (PR #4)](https://github.com/0o120/escodegen-python/pull/4)
 and [AugustineFulgur (PR #5)](https://github.com/0o120/escodegen-python/pull/5)

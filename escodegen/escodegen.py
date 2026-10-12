@@ -116,6 +116,8 @@ def generate(node, options=None):
     token = _generation_context.set(SimpleNamespace(activeNodes=set()))
     try:
         return _generate(node, options)
+    except RecursionError as error:
+        raise ValueError('AST nesting exceeds the generator recursion capacity') from error
     finally:
         _generation_context.reset(token)
 
