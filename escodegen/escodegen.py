@@ -416,48 +416,43 @@ def splice(array, start, deleteCount, *items):
     return array
 
 def generateNumber(value):
-
-    if math.isnan(value):
-        raise Exception('Numeric literal whose value is NaN')
-    if value < 0 or (value == 0 and math.copysign(math.inf, value) < 0):
-        raise Exception('Numeric literal whose value is negative')
-    if  math.isinf(value):
-        return _context().json and 'null' or (_context().renumber and '1e400' or '1e+400')
-    
+    try:
+        number = float(value)
+    except OverflowError as error:
+        raise ValueError('Number literal exceeds binary64; use Literal.bigint for exact integers') from error
+    if isinstance(value, int) and (not math.isfinite(number) or int(number) != value):
+        raise ValueError('Number literal is not exactly representable; use Literal.bigint for exact integers')
+    if math.isnan(number):
+        raise ValueError('Number literal cannot be NaN')
+    if math.isinf(number):
+        return 'null' if _context().json else ('-' if number < 0 else '') + '1e400'
+    if number == 0 and math.copysign(1, number) < 0:
+        return '-0'
     result = str(value)
-    if not _context().renumber or len(result) < 3:
+    if not _context().renumber:
         return result
-    
-    point = result.index('.') if '.' in result else -1
-    if not _context().json and ord(result[0]) == 0x30 and point == 1:
-        point = 0
-        result = result[1:]
-    temp = result
-    result = result.replace('e+', 'e')
-    exponent = 0
-    pos = temp.index('e') if 'e' in temp else -1
-    if (pos > 0):
-        exponent = int(temp[pos + 1:])
-        temp = temp[0:pos]
-    if point >= 0:
-        exponent -= len(temp) - point - 1
-        temp = str(temp[0:point] + temp[point + 1])
-    pos = 0
-    while (len(temp) + pos - 1 >= len(temp)) and ord(temp[len(temp) + pos - 1]) == 0x30:
-        pos -= 1
-    if pos != 0:
-        exponent -= pos
-        temp = temp[0:pos]
-    if exponent != 0:
-        temp += 'e' + str(exponent)
-    if temp == value:
-        if len(temp) < len(result):
-            result = temp
-        else:
-            temp = '0x' + to_base(value, 16)
-            if _context().hexadecimal and value > 1e12 and math.floor(value) == value and len(temp) < len(result):
-                result = temp
-    return result
+    candidates = {result.replace('e+', 'e')}
+    if '.' in result and 'e' not in result.lower():
+        trimmed = result.rstrip('0').rstrip('.')
+        candidates.add(trimmed)
+        if not _context().json:
+            candidates.add(trimmed.replace('0.', '.', 1) if abs(number) < 1 else trimmed)
+    if number.is_integer() and number != 0:
+        decimal = str(abs(int(number)))
+        stem = decimal.rstrip('0')
+        zeros = len(decimal) - len(stem)
+        if zeros:
+            candidates.add(('-' if number < 0 else '') + stem + 'e' + str(zeros))
+        if _context().hexadecimal and not _context().json:
+            candidates.add(('-' if number < 0 else '') + hex(abs(int(number))))
+    # Candidate spellings must round-trip to the same binary64 value.
+    def equivalent(candidate):
+        try:
+            actual = float(int(candidate, 16)) if 'x' in candidate else float(candidate)
+            return actual == number
+        except (ValueError, OverflowError):
+            return False
+    return min((candidate for candidate in candidates if equivalent(candidate)), key=lambda text: (len(text), text))
     
 # Generate valid RegExp expression.
 # This function is based on https://github.com/Constellation/iv Engine
@@ -466,12 +461,13 @@ class RegExp(SimpleObj):
     
     def __init__(self, regex_str):
         
-        _match = re.compile("\/(.*?)\/?([^/]*)$").search(regex_str)
-        _pattern = _match.group(1)
-        _flags = _match.group(2)
-        self.re_pattern = _pattern
-        self.re_flags = 0 | re.M if 'm' in _flags else 0 | re.I if 'i' in _flags else 0
-        self.re_compiled = re.compile(_pattern, self.re_flags)
+        if not isinstance(regex_str, str) or not regex_str.startswith('/'):
+            raise ValueError('Legacy regex values must be JavaScript /pattern/flags strings')
+        end = regex_str.rfind('/')
+        if end == 0:
+            raise ValueError('Legacy regex value is missing its closing slash')
+        _pattern, _flags = regex_str[1:end], regex_str[end + 1:]
+        validateRegExpFlags(_flags)
         self.regex = SimpleObj({
             'pattern': _pattern,
             'flags': _flags
@@ -488,6 +484,11 @@ class RegExp(SimpleObj):
     @property
     def flags(self):
         return self.regex.flags
+
+
+def validateRegExpFlags(flags):
+    if not isinstance(flags, str) or len(set(flags)) != len(flags) or any(flag not in 'dgimsuvy' for flag in flags) or ('u' in flags and 'v' in flags):
+        raise ValueError('Invalid ECMAScript regular-expression flags')
 
 def escapeRegExpCharacter(ch, previousIsBackslash):
     if (ch & ~1) == 0x2028:
@@ -507,7 +508,7 @@ def generateRegExp(reg):
     
     if reg.source:
         # extract flag from toString result
-        match = re.compile("\/([^/]*)$").search(result)
+        match = re.compile(r'/([^/]*)$').search(result)
         if not bool(match):
             return result
         
@@ -976,6 +977,9 @@ def generateMethodPrefix(prop):
 
 def generateInternal(node):
 
+    if not isinstance(node, SimpleObj) or not isinstance(node.type, str):
+        raise ValueError('Expected an ESTree node with a string type field')
+
     codegen = CodeGenerator()
     
     if isStatement(node):
@@ -984,7 +988,7 @@ def generateInternal(node):
     if isExpression(node):
         return codegen.generateExpression(node, Precedence.Sequence, E_TTT)
 
-    raise Exception('Unknown node type: ' + node.type)
+    raise ValueError('Unsupported ESTree node type: ' + node.type)
 
 def _generate(node, options=None):
     pass
@@ -2313,7 +2317,10 @@ class CodeGeneratorExpression:
 
 
         if expr.regex:
-            return '/' + expr.regex.pattern + '/' + expr.regex.flags
+            validateRegExpFlags(expr.regex.flags)
+            if not isinstance(expr.regex.pattern, str):
+                raise ValueError('Regular-expression pattern must be JavaScript source text')
+            return generateRegExp('/' + (expr.regex.pattern or '(?:)') + '/' + expr.regex.flags)
 
         if expr.value is None:
             return 'null'
@@ -2322,7 +2329,8 @@ class CodeGeneratorExpression:
             return escapeString(expr.value)
 
         if type(expr.value) in (int, float):
-            return generateNumber(expr.value)
+            result = generateNumber(expr.value)
+            return parenthesize(result, Precedence.Unary, precedence) if result.startswith('-') else result
 
         if type(expr.value) == bool:
             return 'true' if expr.value else 'false'
@@ -2676,10 +2684,16 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
     
     def generateExpression(self, expr, precedence, flags):
 
+        if not isinstance(expr, SimpleObj) or not isinstance(expr.type, str):
+            raise ValueError('Expected an ESTree expression with a string type field')
+
         if _context().extra.verbatim and expr[_context().extra.verbatim] is not None:
             return generateVerbatim(expr, precedence)
 
-        result = getattr(self, expr.type or Syntax.Property)(expr, precedence, flags)
+        handler = getattr(self, expr.type, None)
+        if handler is None or not hasattr(CodeGeneratorExpression, expr.type):
+            raise ValueError('Unsupported ESTree expression type: ' + expr.type)
+        result = handler(expr, precedence, flags)
         
         if _context().extra.comment:
             result = addComments(expr, result)
@@ -2687,8 +2701,12 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
         return toSourceNodeWhenNeeded(result, expr)
     
     def generateStatement(self, stmt, flags):
-        
-        result = getattr(self, stmt.type)(stmt, flags)
+        if not isinstance(stmt, SimpleObj) or not isinstance(stmt.type, str):
+            raise ValueError('Expected an ESTree statement with a string type field')
+        handler = getattr(self, stmt.type, None)
+        if handler is None or not hasattr(CodeGeneratorStatement, stmt.type):
+            raise ValueError('Unsupported ESTree statement type: ' + stmt.type)
+        result = handler(stmt, flags)
 
         # Attach comments
         
