@@ -32,9 +32,27 @@
 import re
 import math
 import esutils
+from collections.abc import Mapping
 
 
 
+
+
+from contextvars import ContextVar
+from types import SimpleNamespace
+
+_generation_context = ContextVar('escodegen_context')
+
+def _context():
+    return _generation_context.get()
+
+def generate(node, options=None):
+    """Generate without mutating input ASTs or sharing formatting state."""
+    token = _generation_context.set(SimpleNamespace())
+    try:
+        return _generate(node, options)
+    finally:
+        _generation_context.reset(token)
 
 class Syntax:
     AssignmentExpression = "AssignmentExpression"
@@ -214,41 +232,17 @@ S_TFTF = F_ALLOW_IN | F_DIRECTIVE_CTX
 S_TTFF = F_ALLOW_IN | F_FUNC_BODY
 
 class SimpleObj:
-
-    _ignore = [
-        'fromJsonString',
-        'fromJsonFile',
-        'fromDict',
-        '_ignore',
-        '_ignored'
-    ]
-    
-    _ignored = False
-        
+    """Private attribute adapter; retains custom non-JSON values and nulls."""
     def __init__(self, obj=None):
+        if obj is not None:
+            fields = obj.items() if isinstance(obj, Mapping) else vars(obj).items()
+            for key, value in fields:
+                setattr(self, key, value)
 
-        if self._ignored == False or SimpleObj == False:
-            SimpleObj._ignored = True
-            for k in dir(self):
-                if k.startswith('__') and k.endswith('__'):
-                    SimpleObj._ignore.append(k)
-
-        if isinstance(obj, dict):
-            for k,v in obj.items():
-                if hasattr(self, k):
-                    self[k] = v
-                else:
-                    setattr(self, k, v)
-        elif isinstance(obj, SimpleObj):
-            self = SimpleObj
-    
-    def __getattribute__(self, k):
-        attribute = None
-        try:
-            attribute = object.__getattribute__(self, k)
-        except:
-            pass
-        return attribute
+    def __getattr__(self, key):
+        # Emitters explicitly query optional fields. Do not hide exceptions
+        # raised by properties or other existing attributes.
+        return None
         
     def __setitem__(self, k, v):
         setattr(self, k, v)
@@ -257,13 +251,10 @@ class SimpleObj:
         return getattr(self, k, None)
     
     def __iter__(self):
-        return iter([i for i in self.__dir__() if not i in self._ignore])
+        return iter(vars(self))
         
     def __contains__(self, k):
-        for attr in self.__iter__():
-            if attr == k:
-                return True
-        return False
+        return k in vars(self)
         
     def __len__(self):
         return len(list(self.__iter__()))
@@ -297,8 +288,30 @@ class SimpleObj:
     
     @staticmethod
     def fromDict(obj):
-        import json as JSON
-        return SimpleObj.fromJsonString(JSON.dumps(obj))
+        memo = {}
+        def adapt(value):
+            if isinstance(value, (Mapping, SimpleObj)) or (
+                    hasattr(value, '__dict__') and not callable(value)):
+                identity = id(value)
+                if identity in memo:
+                    return memo[identity]
+                result = SimpleObj()
+                memo[identity] = result
+                fields = value.items() if isinstance(value, Mapping) else vars(value).items()
+                for key, item in fields:
+                    setattr(result, key, adapt(item))
+                for canonical, legacy in [('async', 'isAsync'), ('await', 'allowAwait')]:
+                    if canonical in result:
+                        if legacy in result and result[canonical] != result[legacy]:
+                            raise ValueError(f'Conflicting {canonical}/{legacy} AST fields')
+                        result[legacy] = result[canonical]
+                if result.type == 'FieldDefinition':
+                    result.type = 'PropertyDefinition'
+                return result
+            if isinstance(value, (list, tuple)):
+                return [adapt(item) for item in value]
+            return value
+        return adapt(obj)
     
 def getDefaultOptions():
     # default options
@@ -407,14 +420,14 @@ def generateNumber(value):
     if value < 0 or (value == 0 and math.copysign(math.inf, value) < 0):
         raise Exception('Numeric literal whose value is negative')
     if  math.isinf(value):
-        return json and 'null' or (renumber and '1e400' or '1e+400')
+        return _context().json and 'null' or (_context().renumber and '1e400' or '1e+400')
     
     result = str(value)
-    if not renumber or len(result) < 3:
+    if not _context().renumber or len(result) < 3:
         return result
     
     point = result.index('.') if '.' in result else -1
-    if not json and ord(result[0]) == 0x30 and point == 1:
+    if not _context().json and ord(result[0]) == 0x30 and point == 1:
         point = 0
         result = result[1:]
     temp = result
@@ -440,7 +453,7 @@ def generateNumber(value):
             result = temp
         else:
             temp = '0x' + to_base(value, 16)
-            if hexadecimal and value > 1e12 and math.floor(value) == value and len(temp) < len(result):
+            if _context().hexadecimal and value > 1e12 and math.floor(value) == value and len(temp) < len(result):
                 result = temp
     return result
     
@@ -541,7 +554,7 @@ def escapeAllowedCharacter(code, nextChar):
         scalar = code - 0x10000
         return '\\u%04X\\u%04X' % (0xd800 + (scalar >> 10), 0xdc00 + (scalar & 0x3ff))
     _hex = format(code, 'X')
-    if (json or code > 0xff):
+    if (_context().json or code > 0xff):
         return '\\u' + '0000'[len(_hex):] + _hex
     elif code == 0x0000 and not esutils.code.isDecimalDigit(nextChar if not nextChar is None else 0x00):
         return '\\0'
@@ -570,7 +583,7 @@ def escapeDisallowedCharacter(code):
 
 def escapeDirective(string):
     
-    quote = '"' if quotes == 'double' else '\''
+    quote = '"' if _context().quotes == 'double' else '\''
     iz = len(string)
     i = 0
     while i < iz:
@@ -588,8 +601,8 @@ def escapeDirective(string):
     return quote + string + quote
 
 def escapeString(string):
-    single = not (json or quotes == 'double' or
-                  (quotes == 'auto' and string.count('"') < string.count("'")))
+    single = not (_context().json or _context().quotes == 'double' or
+                  (_context().quotes == 'auto' and string.count('"') < string.count("'")))
     quote = "'" if single else '"'
     result = [quote]
     for i, character in enumerate(string):
@@ -599,11 +612,11 @@ def escapeString(string):
         elif code == 0x5c or esutils.code.isLineTerminator(code):
             result.append(escapeDisallowedCharacter(code))
         elif code < 0x20 or 0xd800 <= code <= 0xdfff or (
-                not json and not escapeless and code > 0x7e and
+                not _context().json and not _context().escapeless and code > 0x7e and
                 not esutils.code.isIdentifierPartES5(code)):
             nextChar = ord(string[i + 1]) if i + 1 < len(string) else None
             result.append(escapeAllowedCharacter(code, nextChar))
-        elif json and character == '/':
+        elif _context().json and character == '/':
             result.append('\\/')
         else:
             result.append(character)
@@ -623,7 +636,7 @@ def flattenToString(arr):
  * convert generated to a SourceNode when source maps are enabled.
 """
 def toSourceNodeWhenNeeded(generated, node=None, toString=False):
-    if not sourceMap:
+    if not _context().sourceMap:
         # with no source maps, generated is either an
         # array or a string.  if an array, flatten it.
         # if a string, just return it
@@ -633,19 +646,19 @@ def toSourceNodeWhenNeeded(generated, node=None, toString=False):
             return generated
     
     if node is None:
-        if isinstance(generated, SourceNode):
+        if isinstance(generated, _context().SourceNode):
             return generated
         else:
             node = SimpleObj()
             
     if node.loc is None:
-        sn = SourceNode(None, None, sourceMap, generated, node.name or None)
+        sn = _context().SourceNode(None, None, _context().sourceMap, generated, node.name or None)
     else:
-        sn = SourceNode(node.loc.start.line, node.loc.start.column, (node.loc.source or None) if sourceMap == True else sourceMap, generated, node.name or None)
+        sn = _context().SourceNode(node.loc.start.line, node.loc.start.column, (node.loc.source or None) if _context().sourceMap == True else _context().sourceMap, generated, node.name or None)
     return sn.toString() if toString else sn
 
 def noEmptySpace():
-    return space if space else ' '
+    return _context().space if _context().space else ' '
 
 def join(left, right):
     
@@ -667,17 +680,19 @@ def join(left, right):
     elif (esutils.code.isWhiteSpace(leftCharCode) or esutils.code.isLineTerminator(leftCharCode) or
             esutils.code.isWhiteSpace(rightCharCode) or esutils.code.isLineTerminator(rightCharCode)):
         return [left, right]
-    return [left, space, right]
+    return [left, _context().space, right]
     
 def addIndent(stmt):
-    return [base, stmt]
+    return [_context().base, stmt]
 
 def withIndent(func):
-    global base
-    previousBase = base
-    base += indent
-    func(base)
-    base = previousBase
+    pass
+    previousBase = _context().base
+    _context().base += _context().indent
+    try:
+        func(_context().base)
+    finally:
+        _context().base = previousBase
 
 def calculateSpaces(string):
     i = len(string) - 1
@@ -688,7 +703,7 @@ def calculateSpaces(string):
     return (len(string) - 1) - i
 
 def adjustMultilineComment(value, specialBase):
-    global base
+    pass
     
     array = re.compile('\r\n|[\r\n]').split(value)
     spaces = 1.7976931348623157e+308
@@ -711,10 +726,10 @@ def adjustMultilineComment(value, specialBase):
         #                 * this is comment
         #                 */
         # }
-        previousBase = base
+        previousBase = _context().base
         if array[1][spaces] == '*':
             specialBase += ' '
-        base = specialBase
+        _context().base = specialBase
     else:
         if (spaces & 1):
             # /*
@@ -723,15 +738,15 @@ def adjustMultilineComment(value, specialBase):
             # If spaces are odd number, above pattern is considered.
             # We waste 1 space.
             spaces -= 1
-        previousBase = base
+        previousBase = _context().base
     
     i = 1
     while i < len(array):
         sn = toSourceNodeWhenNeeded(addIndent(array[i][spaces:]))
-        array[i] = sn.join('') if sourceMap else sn
+        array[i] = sn.join('') if _context().sourceMap else sn
         i += 1
         
-    base = previousBase
+    _context().base = previousBase
     
     return '\n'.join(array)
     
@@ -741,10 +756,10 @@ def generateComment(comment, specialBase=None):
             return '//' + comment.value
         else:
             result = '//' + comment.value
-            if not preserveBlankLines:
+            if not _context().preserveBlankLines:
                 result += '\n'
             return result
-    if extra.format.indent.adjustMultilineComment and bool(re.compile("[\n\r]").search(comment.value)):
+    if _context().extra.format.indent.adjustMultilineComment and bool(re.compile("[\n\r]").search(comment.value)):
         return adjustMultilineComment('/*' + comment.value + '*/', specialBase)
     return '/*' + comment.value + '*/';
 
@@ -754,14 +769,14 @@ def addComments(stmt, result):
 
         save = result
         
-        if preserveBlankLines:
+        if _context().preserveBlankLines:
             comment = stmt.leadingComments[0]
             result = []
         
             extRange = comment.extendedRange
             _range = comment.range
             
-            prefix = sourceCode[extRange[0]:_range[0]]
+            prefix = _context().sourceCode[extRange[0]:_range[0]]
             count = len(re.compile('\n').findall(prefix) or [])
             if count > 0:
                 result.append(stringRepeat('\n', count))
@@ -777,7 +792,7 @@ def addComments(stmt, result):
                 comment = stmt.leadingComments[i]
                 _range = comment.range
                 
-                infix = sourceCode[prevRange[1]:_range[0]]
+                infix = _context().sourceCode[prevRange[1]:_range[0]]
                 count = len(re.compile('\n').findall(infix) or [])
                 result.append(stringRepeat('\n', count))
                 result.append(addIndent(generateComment(comment)))
@@ -785,13 +800,13 @@ def addComments(stmt, result):
                 prevRange = _range
                 i += 1
 
-            suffix = sourceCode[_range[1], extRange[1]]
+            suffix = _context().sourceCode[_range[1], extRange[1]]
             count = len(re.compile('\n').findall(suffix) or [])
             result.append(stringRepeat('\n', count))
         else:
             comment = stmt.leadingComments[0]
             result = []
-            if safeConcatenation and stmt.type == Syntax.Program and len(stmt.body) == 0:
+            if _context().safeConcatenation and stmt.type == Syntax.Program and len(stmt.body) == 0:
                 result.append('\n')
             result.append(generateComment(comment))
             if not endsWithLineTerminator(toSourceNodeWhenNeeded(result, toString=True)):
@@ -808,12 +823,12 @@ def addComments(stmt, result):
     
     if stmt.trailingComments:
         
-        if preserveBlankLines:
+        if _context().preserveBlankLines:
             comment = stmt.trailingComments[0]
             extRange = comment.extendedRange
             _range = comment.range
             
-            prefix = sourceCode[extRange[0]:_range[0]]
+            prefix = _context().sourceCode[extRange[0]:_range[0]]
             count = len(re.compile('\n').findall(prefix) or [])
             
             if count > 0:
@@ -824,7 +839,7 @@ def addComments(stmt, result):
                 result.append(generateComment(comment))
         else:
             tailingToStatement = not endsWithLineTerminator(toSourceNodeWhenNeeded(result, toString=True))
-            specialBase = stringRepeat(' ', calculateSpaces(toSourceNodeWhenNeeded([base, result, indent], toString=True)))
+            specialBase = stringRepeat(' ', calculateSpaces(toSourceNodeWhenNeeded([_context().base, result, _context().indent], toString=True)))
             length = len(stmt.trailingComments)
             for i in range(length):
                 comment = stmt.trailingComments[i]
@@ -836,7 +851,7 @@ def addComments(stmt, result):
                     #               */
                     if i == 0:
                         # first case
-                        result = [result, indent]
+                        result = [result, _context().indent]
                     else:
                         result = [result, specialBase]
                     result.append(generateComment(comment, specialBase))
@@ -851,11 +866,11 @@ def generateBlankLines(start, end, result):
     newlineCount = 0
     
     for j in range(start, end):
-        if sourceCode[j] == '\n':
+        if _context().sourceCode[j] == '\n':
             newlineCount += 1
     
     for j in range(1, newlineCount):
-        result.append(newline)
+        result.append(_context().newline)
 
 def parenthesize(text, current, should):
     if current < should:
@@ -865,11 +880,11 @@ def parenthesize(text, current, should):
 def generateVerbatimString(string):
     result = re.compile('\r\n|\n').split(string)
     for i in range(1, len(result)):
-        result[i] = newline + base + result[i]
+        result[i] = _context().newline + _context().base + result[i]
     return result
 
 def generateVerbatim(expr, precedence):
-    verbatim = expr[extra.verbatim]
+    verbatim = expr[_context().extra.verbatim]
     if isinstance(verbatim, str):
         result = parenthesize(generateVerbatimString(verbatim), Precedence.Sequence, precedence)
     else:
@@ -884,11 +899,11 @@ def generateIdentifier(node):
     return toSourceNodeWhenNeeded(node.name, node)
 
 def generateAsyncPrefix(node, spaceRequired):
-    return 'async' + (noEmptySpace() if spaceRequired else space) if node.isAsync else ''
+    return 'async' + (noEmptySpace() if spaceRequired else _context().space) if node.isAsync else ''
 
 def generateStarSuffix(node):
-    isGenerator = node.generator and not extra.moz.starlessGenerator
-    return '*' + space if isGenerator else ''
+    isGenerator = node.generator and not _context().extra.moz.starlessGenerator
+    return '*' + _context().space if isGenerator else ''
 
 def generateMethodPrefix(prop):
     func = prop.value
@@ -911,10 +926,10 @@ def generateInternal(node):
 
     raise Exception('Unknown node type: ' + node.type)
 
-def generate(node, options=None):
-    global base, indent, json, renumber, hexadecimal, quotes, escapeless, newline
-    global space, parentheses, semicolons, safeConcatenation, directive
-    global parse, sourceMap, sourceCode, preserveBlankLines, extra, SourceNode
+def _generate(node, options=None):
+    pass
+    pass
+    pass
 
     defaultOptions = getDefaultOptions()
     
@@ -926,7 +941,7 @@ def generate(node, options=None):
         #
         # Instead of them, we can use `option.format.indent`.
         if isinstance(options, dict):
-            options = SimpleObj(options)
+            options = SimpleObj.fromDict(options)
 
         if isinstance(options.indent, str):
             defaultOptions.format.indent.style = options.indent
@@ -935,49 +950,48 @@ def generate(node, options=None):
             defaultOptions.format.indent.base = options.base
         options = updateDeeply(defaultOptions, options)
 
-        indent = options.format.indent.style
+        _context().indent = options.format.indent.style
         if isinstance(options.base, str):
-            base = options.base
+            _context().base = options.base
         else:
-            base = stringRepeat(indent, options.format.indent.base)
+            _context().base = stringRepeat(_context().indent, options.format.indent.base)
     
     else:
         options = defaultOptions
-        indent = options.format.indent.style
-        base = stringRepeat(indent, options.format.indent.base)
+        _context().indent = options.format.indent.style
+        _context().base = stringRepeat(_context().indent, options.format.indent.base)
     
-    json = options.format.json
-    renumber = options.format.renumber
-    hexadecimal = False if json else options.format.hexadecimal
-    quotes = 'double' if json else options.format.quotes
-    escapeless = options.format.escapeless
-    newline = options.format.newline
-    space = options.format.space
+    _context().json = options.format.json
+    _context().renumber = options.format.renumber
+    _context().hexadecimal = False if _context().json else options.format.hexadecimal
+    _context().quotes = 'double' if _context().json else options.format.quotes
+    _context().escapeless = options.format.escapeless
+    _context().newline = options.format.newline
+    _context().space = options.format.space
 
     if options.format.compact:
-        newline = space = indent = base = ''
+        _context().newline = _context().space = _context().indent = _context().base = ''
         
-    parentheses = options.format.parentheses
-    semicolons = options.format.semicolons
-    safeConcatenation = options.format.safeConcatenation
-    directive = options.directive
-    parse = None if json else options.parse
-    sourceMap = options.sourceMap
-    sourceCode = options.sourceCode
+    _context().parentheses = options.format.parentheses
+    _context().semicolons = options.format.semicolons
+    _context().safeConcatenation = options.format.safeConcatenation
+    _context().directive = options.directive
+    _context().parse = None if _context().json else options.parse
+    _context().sourceMap = options.sourceMap
+    _context().sourceCode = options.sourceCode
     
-    preserveBlankLines = options.format.preserveBlankLines and not sourceCode is None
+    _context().preserveBlankLines = options.format.preserveBlankLines and not _context().sourceCode is None
 
-    extra = options
+    _context().extra = options
 
-    if sourceMap:
-        SourceNode = SimpleObj()
+    if _context().sourceMap:
+        _context().SourceNode = SimpleObj()
         
-    if type(node) == dict:
-        node = SimpleObj.fromDict(node)
+    node = SimpleObj.fromDict(node)
     
     result = generateInternal(node)
     
-    if not sourceMap:
+    if not _context().sourceMap:
         pair = SimpleObj({'code': result, 'map': None}) # result.toString()
         return pair if options.sourceMapWithCode else pair.code
     
@@ -1001,14 +1015,14 @@ class CodeGeneratorStatement:
     def BlockStatement(self, stmt, flags):
         _range = None
         content = None
-        result = ['{', newline]
+        result = ['{', _context().newline]
         that = self
         def fn(*args, **kwargs):
             nonlocal result
-            if len(stmt.body) == 0 and preserveBlankLines:
+            if len(stmt.body) == 0 and _context().preserveBlankLines:
                 _range = stmt.range
                 if _range[1] - _range[0] > 2:
-                    content = sourceCode[_range[0] + 1:_range[1] - 1]
+                    content = _context().sourceCode[_range[0] + 1:_range[1] - 1]
                     if content[0] == '\n':
                         result.clear()
                         result = ['{']
@@ -1022,12 +1036,12 @@ class CodeGeneratorStatement:
             i = 0
             iz = len(stmt.body)
             while i < iz:
-                if preserveBlankLines:
+                if _context().preserveBlankLines:
                     # handle spaces before the first line
                     if i == 0:
                         if stmt.body[0].leadingComments:
                             _range = stmt.body[0].leadingComments[0].extendedRange
-                            content = sourceCode[_range[0]:_range[1]]
+                            content = _context().sourceCode[_range[0]:_range[1]]
                             if content[0] == '\n':
                                 result.clear()
                                 result = ['{']
@@ -1043,7 +1057,7 @@ class CodeGeneratorStatement:
                 if i == iz - 1:
                     bodyFlags |= F_SEMICOLON_OPT
 
-                if stmt.body[i].leadingComments and preserveBlankLines:
+                if stmt.body[i].leadingComments and _context().preserveBlankLines:
                     fragment = that.generateStatement(stmt.body[i], bodyFlags)
                 else:
                     fragment = addIndent(that.generateStatement(stmt.body[i], bodyFlags))
@@ -1052,15 +1066,15 @@ class CodeGeneratorStatement:
                 
                 if not endsWithLineTerminator(toSourceNodeWhenNeeded(fragment, toString=True)):
 
-                    if (preserveBlankLines and i < iz - 1):
+                    if (_context().preserveBlankLines and i < iz - 1):
                         # don't add a new line if there are leading coments
                         # in the next statement
                         if not stmt.body[i + 1].leadingComments:
-                            result.append(newline)
+                            result.append(_context().newline)
                     else:
-                        result.append(newline)
+                        result.append(_context().newline)
 
-                if preserveBlankLines:
+                if _context().preserveBlankLines:
                     # handle spaces after the last line
                     if i == iz - 1:
                         if not stmt.body[i].trailingComments:
@@ -1085,7 +1099,7 @@ class CodeGeneratorStatement:
         return 'continue' + self.semicolon(flags)
     
     def ClassBody(self, stmt, flags):
-        result = [ '{', newline]
+        result = [ '{', _context().newline]
         that = self
         
         def fn(indent, *args, **kwargs):
@@ -1095,14 +1109,14 @@ class CodeGeneratorStatement:
                 result.append(indent)
                 result.append(that.generateExpression(stmt.body[i], Precedence.Sequence, E_TTT))
                 if i + 1 < iz:
-                    result.append(newline)
+                    result.append(_context().newline)
                     
         withIndent(fn)
 
         if not endsWithLineTerminator(toSourceNodeWhenNeeded(result, toString=True)):
-            result.append(newline)
+            result.append(_context().newline)
 
-        result.append(base)
+        result.append(_context().base)
         result.append('}')
         return result
     
@@ -1115,12 +1129,12 @@ class CodeGeneratorStatement:
             fragment = join('extends', self.generateExpression(stmt.superClass, Precedence.Unary, E_TTT))
             result = join(result, fragment)
 
-        result.append(space)
+        result.append(_context().space)
         result.append(self.generateStatement(stmt.body, S_TFFT))
         return result
     
     def DirectiveStatement(self, stmt, flags):
-        if extra.raw and stmt.raw:
+        if _context().extra.raw and stmt.raw:
             return stmt.raw + self.semicolon(flags)
 
         return escapeDirective(stmt.directive) + self.semicolon(flags)
@@ -1130,7 +1144,7 @@ class CodeGeneratorStatement:
         result = join('do', self.maybeBlock(stmt.body, S_TFFF))
         result = self.maybeBlockSuffix(stmt.body, result)
         return join(result, [
-            'while' + space + '(',
+            'while' + _context().space + '(',
             self.generateExpression(stmt.test, Precedence.Sequence, E_TTT),
             ')' + self.semicolon(flags)
         ])
@@ -1143,7 +1157,7 @@ class CodeGeneratorStatement:
             nonlocal result
             if stmt.param:
                 result = [
-                    'catch' + space + '(',
+                    'catch' + _context().space + '(',
                     that.generateExpression(stmt.param, Precedence.Sequence, E_TTT),
                     ')'
                 ]
@@ -1193,30 +1207,30 @@ class CodeGeneratorStatement:
         # export ExportClause 
         if stmt.specifiers:
             if len(stmt.specifiers) == 0:
-                result = join(result, '{' + space + '}')
+                result = join(result, '{' + _context().space + '}')
             else:
                 result = join(result, '{')
                 
                 def fn(indent, *args, **kwargs):
                     nonlocal result
-                    result.append(newline)
+                    result.append(_context().newline)
                     iz = len(stmt.specifiers)
                     for i in range(iz):
                         result.append(indent)
                         result.append(that.generateExpression(stmt.specifiers[i], Precedence.Sequence, E_TTT))
                         if i + 1 < iz:
-                            result.append(',' + newline)
+                            result.append(',' + _context().newline)
 
                 withIndent(fn)
                 
                 if not endsWithLineTerminator(toSourceNodeWhenNeeded(result, toString=True)):
-                    result.append(newline)
+                    result.append(_context().newline)
 
-                result.append(base + '}')
+                result.append(_context().base + '}')
 
             if stmt.source:
                 result = join(result, [
-                    'from' + space,
+                    'from' + _context().space,
                     # ModuleSpecifier
                     self.generateExpression(stmt.source, Precedence.Sequence, E_TTT),
                     self.semicolon(flags)
@@ -1229,9 +1243,9 @@ class CodeGeneratorStatement:
     def ExportAllDeclaration(self, stmt, flags):
         # export * FromClause 
         return [
-            'export' + space,
-            '*' + space,
-            'from' + space,
+            'export' + _context().space,
+            '*' + _context().space,
+            'from' + _context().space,
             # ModuleSpecifier
             self.generateExpression(stmt.source, Precedence.Sequence, E_TTT),
             self.semicolon(flags)
@@ -1292,7 +1306,7 @@ class CodeGeneratorStatement:
                 isClassPrefixed(fragment) or
                 isFunctionPrefixed(fragment) or
                 isAsyncPrefixed(fragment) or
-                (directive and (flags & F_DIRECTIVE_CTX) and stmt.expression.type == Syntax.Literal and isinstance(stmt.expression.value, str))
+                (_context().directive and (flags & F_DIRECTIVE_CTX) and stmt.expression.type == Syntax.Literal and isinstance(stmt.expression.value, str))
             ):
             result = ['(', result, ')' + self.semicolon(flags)]
         else:
@@ -1313,7 +1327,7 @@ class CodeGeneratorStatement:
             # import ModuleSpecifier 
             return [
                 'import',
-                space,
+                _context().space,
                 # ModuleSpecifier
                 self.generateExpression(stmt.source, Precedence.Sequence, E_TTT),
                 self.semicolon(flags)
@@ -1339,18 +1353,18 @@ class CodeGeneratorStatement:
             if stmt.specifiers[cursor].type == Syntax.ImportNamespaceSpecifier:
                 # NameSpaceImport
                 result = join(result, [
-                    space,
+                    _context().space,
                     self.generateExpression(stmt.specifiers[cursor], Precedence.Sequence, E_TTT)
                 ])
             else:
                 # NamedImports
-                result.append(space + '{')
+                result.append(_context().space + '{')
 
                 if len(stmt.specifiers) - cursor == 1:
                     # import { ... } from "..."
-                    result.append(space)
+                    result.append(_context().space)
                     result.append(self.generateExpression(stmt.specifiers[cursor], Precedence.Sequence, E_TTT))
-                    result.append(space + '}' + space)
+                    result.append(_context().space + '}' + _context().space)
                 else:
                     # import {
                     #    ...,
@@ -1358,23 +1372,23 @@ class CodeGeneratorStatement:
                     # } from "..."
                     def fn(indent, *args, **kwargs):
                         nonlocal result
-                        result.append(newline)
+                        result.append(_context().newline)
                         i = cursor
                         iz = len(stmt.specifiers)
                         while i < iz:
                             result.append(indent)
                             result.append(that.generateExpression(stmt.specifiers[i], Precedence.Sequence, E_TTT))
                             if i + 1 < iz:
-                                result.append(',' + newline)
+                                result.append(',' + _context().newline)
                             i += 1
                                 
                     withIndent(fn)
                     if not endsWithLineTerminator(toSourceNodeWhenNeeded(result, toString=True)):
-                        result.append(newline)
-                    result.append(base + '}' + space)
+                        result.append(_context().newline)
+                    result.append(_context().base + '}' + _context().space)
 
         result = join(result, [
-            'from' + space,
+            'from' + _context().space,
             # ModuleSpecifier
             self.generateExpression(stmt.source, Precedence.Sequence, E_TTT),
             self.semicolon(flags)
@@ -1386,9 +1400,9 @@ class CodeGeneratorStatement:
         if stmt.init:
             return [
                 self.generateExpression(stmt.id, Precedence.Assignment, itemFlags),
-                space,
+                _context().space,
                 '=',
-                space,
+                _context().space,
                 self.generateExpression(stmt.init, Precedence.Assignment, itemFlags)
             ]
 
@@ -1405,7 +1419,7 @@ class CodeGeneratorStatement:
         def fnBlock(*args, **kwargs):
             nonlocal result
             node = stmt.declarations[0]
-            if extra.comment and node.leadingComments:
+            if _context().extra.comment and node.leadingComments:
                 result.append('\n')
                 result.append(addIndent(that.generateStatement(node, bodyFlags)))
             else:
@@ -1414,11 +1428,11 @@ class CodeGeneratorStatement:
 
             for i in range(1, len(stmt.declarations)):
                 node = stmt.declarations[i]
-                if extra.comment and node.leadingComments:
-                    result.append(',' + newline)
+                if _context().extra.comment and node.leadingComments:
+                    result.append(',' + _context().newline)
                     result.append(addIndent(that.generateStatement(node, bodyFlags)))
                 else:
-                    result.append(',' + space)
+                    result.append(',' + _context().space)
                     result.append(that.generateStatement(node, bodyFlags))
 
         if len(stmt.declarations) > 1:
@@ -1481,9 +1495,9 @@ class CodeGeneratorStatement:
         def fn(*args, **kwargs):
             nonlocal result
             result.extend([
-                'switch' + space + '(',
+                'switch' + _context().space + '(',
                 that.generateExpression(stmt.discriminant, Precedence.Sequence, E_TTT),
-                ')' + space + '{' + newline
+                ')' + _context().space + '{' + _context().newline
             ])
         withIndent(fn)
         if stmt.cases:
@@ -1495,7 +1509,7 @@ class CodeGeneratorStatement:
                 fragment = addIndent(self.generateStatement(stmt.cases[i], bodyFlags))
                 result.append(fragment)
                 if not endsWithLineTerminator(toSourceNodeWhenNeeded(fragment, toString=True)):
-                    result.append(newline)
+                    result.append(_context().newline)
 
         result.append(addIndent('}'))
         return result
@@ -1522,7 +1536,7 @@ class CodeGeneratorStatement:
                 i = 1
 
             if i != iz and not endsWithLineTerminator(toSourceNodeWhenNeeded(result, toString=True)):
-                result.append(newline)
+                result.append(_context().newline)
 
             bodyFlags = S_TFFF
             while i < iz:
@@ -1532,7 +1546,7 @@ class CodeGeneratorStatement:
                 fragment = addIndent(that.generateStatement(stmt.consequent[i], bodyFlags))
                 result.append(fragment)
                 if i + 1 != iz and not endsWithLineTerminator(toSourceNodeWhenNeeded(fragment, toString=True)):
-                    result.append(newline)
+                    result.append(_context().newline)
                 i += 1
 
         withIndent(fn)
@@ -1545,7 +1559,7 @@ class CodeGeneratorStatement:
             nonlocal result
             
             result.extend([
-                'if' + space + '(',
+                'if' + _context().space + '(',
                 that.generateExpression(stmt.test, Precedence.Sequence, E_TTT),
                 ')'
             ])
@@ -1573,7 +1587,7 @@ class CodeGeneratorStatement:
         result = []
         def fn(*args, **kwargs):
             nonlocal result
-            result.extend(['for' + space + '('])
+            result.extend(['for' + _context().space + '('])
             if stmt.init:
                 if stmt.init.type == Syntax.VariableDeclaration:
                     result.append(that.generateStatement(stmt.init, S_FFFF))
@@ -1585,14 +1599,14 @@ class CodeGeneratorStatement:
                 result.append(';')
 
             if stmt.test:
-                result.append(space)
+                result.append(_context().space)
                 result.append(that.generateExpression(stmt.test, Precedence.Sequence, E_TTT))
                 result.append(';')
             else:
                 result.append(';')
 
             if stmt.update:
-                result.append(space)
+                result.append(_context().space)
                 result.append(that.generateExpression(stmt.update, Precedence.Sequence, E_TTT))
                 result.append(')')
             else:
@@ -1614,13 +1628,13 @@ class CodeGeneratorStatement:
 
     def Program(self, stmt, flags):
         iz = len(stmt.body)
-        result = ['\n' if (safeConcatenation and iz > 0) else '']
+        result = ['\n' if (_context().safeConcatenation and iz > 0) else '']
         bodyFlags = S_TFTF
         for i in range(iz):
-            if not safeConcatenation and i == iz - 1:
+            if not _context().safeConcatenation and i == iz - 1:
                 bodyFlags |= F_SEMICOLON_OPT
 
-            if preserveBlankLines:
+            if _context().preserveBlankLines:
                 # handle spaces before the first line
                 if i == 0:
                     if not stmt.body[0].leadingComments:
@@ -1634,13 +1648,13 @@ class CodeGeneratorStatement:
             fragment = addIndent(self.generateStatement(stmt.body[i], bodyFlags))
             result.append(fragment)
             if i + 1 < iz and not endsWithLineTerminator(toSourceNodeWhenNeeded(fragment, toString=True)):
-                if preserveBlankLines:
+                if _context().preserveBlankLines:
                     if not stmt.body[i + 1].leadingComments:
-                        result.append(newline)
+                        result.append(_context().newline)
                 else:
-                    result.append(newline)
+                    result.append(_context().newline)
 
-            if preserveBlankLines:
+            if _context().preserveBlankLines:
                 # handle spaces after the last line
                 if (i == iz - 1):
                     if not stmt.body[i].trailingComments:
@@ -1672,7 +1686,7 @@ class CodeGeneratorStatement:
         def fn(*args, **kwargs):
             nonlocal result
             result.extend([
-                'while' + space + '(',
+                'while' + _context().space + '(',
                 that.generateExpression(stmt.test, Precedence.Sequence, E_TTT),
                 ')'
             ])
@@ -1687,7 +1701,7 @@ class CodeGeneratorStatement:
         def fn(*args, **kwargs):
             nonlocal result
             result.extend([
-                'with' + space + '(',
+                'with' + _context().space + '(',
                 that.generateExpression(stmt.test, Precedence.Sequence, E_TTT),
                 ')'
             ])
@@ -1708,7 +1722,7 @@ class CodeGeneratorExpression:
         for i in range(iz):
             result.append(self.generateExpression(expr.expressions[i], Precedence.Assignment, flags))
             if i + 1 < iz:
-                result.append(',' + space)
+                result.append(',' + _context().space)
 
         return parenthesize(result, Precedence.Sequence, precedence)
     
@@ -1724,9 +1738,9 @@ class CodeGeneratorExpression:
         return parenthesize(
             [
                 self.generateExpression(expr.test, Precedence.Coalesce, flags),
-                space + '?' + space,
+                _context().space + '?' + _context().space,
                 self.generateExpression(expr.consequent, Precedence.Assignment, flags),
-                space + ':' + space,
+                _context().space + ':' + _context().space,
                 self.generateExpression(expr.alternate, Precedence.Assignment, flags)
             ],
             Precedence.Conditional,
@@ -1792,7 +1806,7 @@ class CodeGeneratorExpression:
         for i in range(iz):
             result.append(self.generateExpression(expr.arguments[i], Precedence.Assignment, E_TTT))
             if i + 1 < iz:
-                result.append(',' + space)
+                result.append(',' + _context().space)
         result.append(')')
 
         if not (flags & F_ALLOW_CALL):
@@ -1814,20 +1828,20 @@ class CodeGeneratorExpression:
         
         # F_ALLOW_CALL becomes false.
         # F_ALLOW_UNPARATH_NEW may become false.
-        itemFlags = E_TFT if (flags & F_ALLOW_UNPARATH_NEW and not parentheses and length == 0) else E_TFF
+        itemFlags = E_TFT if (flags & F_ALLOW_UNPARATH_NEW and not _context().parentheses and length == 0) else E_TFF
 
         result = join(
             'new',
             self.generateExpression(expr.callee, Precedence.New, itemFlags)
         )
 
-        if not (flags & F_ALLOW_UNPARATH_NEW) or parentheses or length > 0:
+        if not (flags & F_ALLOW_UNPARATH_NEW) or _context().parentheses or length > 0:
             result.append('(')
             iz = length
             for i in range(iz):
                 result.append(self.generateExpression(expr.arguments[i], Precedence.Assignment, E_TTT))
                 if i + 1 < iz:
-                    result.append(',' + space)
+                    result.append(',' + _context().space)
             result.append(')')
 
         return parenthesize(result, Precedence.New, precedence)
@@ -1873,7 +1887,7 @@ class CodeGeneratorExpression:
     def UnaryExpression(self, expr, precedence, flags):
         fragment = self.generateExpression(expr.argument, Precedence.Unary, E_TTT)
 
-        if space == '':
+        if _context().space == '':
             result = join(expr.operator, fragment)
         else:
             result = [expr.operator]
@@ -1950,7 +1964,7 @@ class CodeGeneratorExpression:
             result.append(generateStarSuffix(expr) or noEmptySpace())
             result.append(generateIdentifier(expr.id))
         else:
-            result.append(generateStarSuffix(expr) or space)
+            result.append(generateStarSuffix(expr) or _context().space)
 
         result.append(self.generateFunctionBody(expr))
         return result
@@ -1964,7 +1978,7 @@ class CodeGeneratorExpression:
             return '[]'
 
         multiline = False if isPattern else len(expr.elements) > 1
-        result = ['[', newline if multiline else '']
+        result = ['[', _context().newline if multiline else '']
         def fn(indent, *args, **kwargs):
             nonlocal result
             iz = len(expr.elements)
@@ -1978,14 +1992,14 @@ class CodeGeneratorExpression:
                     result.append(indent if multiline else '')
                     result.append(that.generateExpression(expr.elements[i], Precedence.Assignment, E_TTT))
                 if i + 1 < iz:
-                    result.append(',' + (newline if multiline else space))
+                    result.append(',' + (_context().newline if multiline else _context().space))
 
         withIndent(fn)
         
         if multiline and not endsWithLineTerminator(toSourceNodeWhenNeeded(result, toString=True)):
-            result.append(newline)
+            result.append(_context().newline)
 
-        result.append(base if multiline else '')
+        result.append(_context().base if multiline else '')
         result.append(']')
         return result
     
@@ -2001,14 +2015,14 @@ class CodeGeneratorExpression:
             fragment = join('extends', self.generateExpression(expr.superClass, Precedence.Unary, E_TTT))
             result = join(result, fragment)
 
-        result.append(space)
+        result.append(_context().space)
         result.append(self.generateStatement(expr.body, S_TFFT))
         return result
     
     def MethodDefinition(self, expr, precedence, flags):
 
         if expr.static:
-            result = ['static' + space]
+            result = ['static' + _context().space]
         else:
             result = []
 
@@ -2048,7 +2062,7 @@ class CodeGeneratorExpression:
 
         return [
             self.generatePropertyKey(expr.key, expr.computed),
-            ':' + space,
+            ':' + _context().space,
             self.generateExpression(expr.value, Precedence.Assignment, E_TTT)
         ]
     
@@ -2077,28 +2091,28 @@ class CodeGeneratorExpression:
             #   dejavu.Class.declare({method2: function ():
             #       }})
             if not hasLineTerminator(toSourceNodeWhenNeeded(fragment, toString=True)):
-                return [ '{', space, fragment, space, '}' ]
+                return [ '{', _context().space, fragment, _context().space, '}' ]
 
         def fn2(indent, *args, **kwargs):
             nonlocal result
             
-            result.extend([ '{', newline, indent, fragment ])
+            result.extend([ '{', _context().newline, indent, fragment ])
 
             if multiline:
-                result.append(',' + newline)
+                result.append(',' + _context().newline)
                 iz = len(expr.properties)
                 for i in range(1, iz):
                     result.append(indent)
                     result.append(that.generateExpression(expr.properties[i], Precedence.Sequence, E_TTT))
                     if i + 1 < iz:
-                        result.append(',' + newline)
+                        result.append(',' + _context().newline)
 
         withIndent(fn2)
 
         if not endsWithLineTerminator(toSourceNodeWhenNeeded(result, toString=True)):
-            result.append(newline)
+            result.append(_context().newline)
 
-        result.append(base)
+        result.append(_context().base)
         result.append('}')
         return result
     
@@ -2124,7 +2138,7 @@ class CodeGeneratorExpression:
                     multiline = True
                     break
 
-        result = ['{', newline if multiline else '' ]
+        result = ['{', _context().newline if multiline else '' ]
 
         def fn(indent, *args, **kwargs):
             nonlocal result
@@ -2133,14 +2147,14 @@ class CodeGeneratorExpression:
                 result.append(indent if multiline else '')
                 result.append(that.generateExpression(expr.properties[i], Precedence.Sequence, E_TTT))
                 if i + 1 < iz:
-                    result.append(',' + (newline if multiline else space))
+                    result.append(',' + (_context().newline if multiline else _context().space))
 
         withIndent(fn)
 
         if multiline and not endsWithLineTerminator(toSourceNodeWhenNeeded(result, toString=True)):
-            result.append(newline)
+            result.append(_context().newline)
 
-        result.append(base if multiline else '')
+        result.append(_context().base if multiline else '')
         result.append('}')
         return result
     
@@ -2160,7 +2174,7 @@ class CodeGeneratorExpression:
         result = ['*']
         _id = expr.id or expr.local
         if _id:
-            result.append(space + 'as' + noEmptySpace() + generateIdentifier(_id))
+            result.append(_context().space + 'as' + noEmptySpace() + generateIdentifier(_id))
 
         return result
     
@@ -2184,9 +2198,9 @@ class CodeGeneratorExpression:
     
     def Literal(self, expr, precedence, flags):
 
-        if hasattr(expr, 'raw') and parse and extra.raw:
+        if hasattr(expr, 'raw') and _context().parse and _context().extra.raw:
             try:
-                raw = parse(expr.raw).body[0].expression
+                raw = _context().parse(expr.raw).body[0].expression
                 if raw.type == Syntax.Literal:
                     if raw.value == expr.value:
                         return expr.raw
@@ -2236,7 +2250,7 @@ class CodeGeneratorExpression:
         result =  ['('] if (expr.type == Syntax.GeneratorExpression) else ['[']
         fragment = None
         
-        if extra.moz.comprehensionExpressionStartsWithAssignment:
+        if _context().extra.moz.comprehensionExpressionStartsWithAssignment:
             fragment = self.generateExpression(expr.body, Precedence.Assignment, E_TTT)
             result.append(fragment)
 
@@ -2245,7 +2259,7 @@ class CodeGeneratorExpression:
                 nonlocal result, fragment
                 for i in range(len(expr.blocks)):
                     fragment = that.generateExpression(expr.blocks[i], Precedence.Sequence, E_TTT)
-                    if i > 0 or extra.moz.comprehensionExpressionStartsWithAssignment:
+                    if i > 0 or _context().extra.moz.comprehensionExpressionStartsWithAssignment:
                         result = join(result, fragment)
                     else:
                         result.append(fragment)
@@ -2253,11 +2267,11 @@ class CodeGeneratorExpression:
             withIndent(fn)
 
         if expr.filter:
-            result = join(result, 'if' + space)
+            result = join(result, 'if' + _context().space)
             fragment = self.generateExpression(expr.filter, Precedence.Sequence, E_TTT)
             result = join(result, [ '(', fragment, ')' ])
 
-        if not extra.moz.comprehensionExpressionStartsWithAssignment:
+        if not _context().extra.moz.comprehensionExpressionStartsWithAssignment:
             fragment = self.generateExpression(expr.body, Precedence.Assignment, E_TTT)
             result = join(result, fragment)
 
@@ -2277,7 +2291,7 @@ class CodeGeneratorExpression:
         fragment = join(fragment, 'of' if expr.of else 'in')
         fragment = join(fragment, self.generateExpression(expr.right, Precedence.Sequence, E_TTT))
 
-        return [ 'for' + space + '(', fragment, ')' ]
+        return [ 'for' + _context().space + '(', fragment, ')' ]
     
     def SpreadElement(self, expr, precedence, flags):
         return [
@@ -2307,9 +2321,9 @@ class CodeGeneratorExpression:
         for i in range(iz):
             result.append(self.generateExpression(expr.quasis[i], Precedence.Primary, E_TTT))
             if i + 1 < iz:
-                result.append('${' + space)
+                result.append('${' + _context().space)
                 result.append(self.generateExpression(expr.expressions[i], Precedence.Sequence, E_TTT))
-                result.append(space + '}')
+                result.append(_context().space + '}')
 
         result.append('`')
         return result
@@ -2329,10 +2343,10 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
     def maybeBlock(self, stmt, flags):
         that = self
         result = []
-        noLeadingComment = not extra.comment or not stmt.leadingComments
+        noLeadingComment = not _context().extra.comment or not stmt.leadingComments
 
         if stmt.type == Syntax.BlockStatement and noLeadingComment:
-            return [space, self.generateStatement(stmt, flags)]
+            return [_context().space, self.generateStatement(stmt, flags)]
 
         if stmt.type == Syntax.EmptyStatement and noLeadingComment:
             return ';'
@@ -2340,7 +2354,7 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
         def fn(*args, **kwargs):
             nonlocal result
             result.extend([
-                newline,
+                _context().newline,
                 addIndent(that.generateStatement(stmt, flags))
             ])
         withIndent(fn)
@@ -2351,13 +2365,13 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
 
         ends = endsWithLineTerminator(toSourceNodeWhenNeeded(result, toString=True))
 
-        if stmt.type == Syntax.BlockStatement and (not extra.comment or not stmt.leadingComments) and not ends:
-            return [result, space]
+        if stmt.type == Syntax.BlockStatement and (not _context().extra.comment or not stmt.leadingComments) and not ends:
+            return [result, _context().space]
 
         if ends:
-            return [result, base]
+            return [result, _context().base]
 
-        return [result, newline, base]
+        return [result, _context().newline, _context().base]
     
     def generatePattern(self, node, precedence, flags):
         if node.type == Syntax.Identifier:
@@ -2388,10 +2402,10 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
                 else:
                     result.append(self.generatePattern(node.params[i], Precedence.Assignment, E_TTT))
                 if i + 1 < iz:
-                    result.append(',' + space)
+                    result.append(',' + _context().space)
             if node.rest:
                 if len(node.params):
-                    result.append(',' + space)
+                    result.append(',' + _context().space)
 
                 result.append('...')
                 result.append(generateIdentifier(node.rest))
@@ -2405,11 +2419,11 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
         result = self.generateFunctionParams(node)
 
         if node.type == Syntax.ArrowFunctionExpression:
-            result.append(space)
+            result.append(_context().space)
             result.append('=>')
 
         if node.expression:
-            result.append(space)
+            result.append(_context().space)
             expr = self.generateExpression(node.body, Precedence.Assignment, E_TTT)
             if expr[0] == '{': # TODO: expr.toString().charAt(0)
                 expr = ['(', expr, ')']
@@ -2421,7 +2435,7 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
     
     def generateIterationForStatement(self, operator, stmt, flags):
         that = self
-        result = ['for' + (noEmptySpace() + 'await' if stmt.allowAwait else '') + space + '('] # TODO: stmt.await => stmt.allowAwait ?
+        result = ['for' + (noEmptySpace() + 'await' if stmt.allowAwait else '') + _context().space + '('] # TODO: stmt.await => stmt.allowAwait ?
         
         def fn(*args, **kwargs):
             nonlocal result
@@ -2464,7 +2478,7 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
         return parenthesize(
             [
                 self.generateExpression(left, Precedence.Call, flags),
-                space + operator + space,
+                _context().space + operator + _context().space,
                 self.generateExpression(right, Precedence.Assignment, flags)
             ],
             Precedence.Assignment,
@@ -2472,19 +2486,19 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
         )
     
     def semicolon(self, flags):
-        if not semicolons and (flags & F_SEMICOLON_OPT):
+        if not _context().semicolons and (flags & F_SEMICOLON_OPT):
             return ''
 
         return ';'
     
     def generateExpression(self, expr, precedence, flags):
 
-        if extra.verbatim and hasattr(expr, extra.verbatim):
+        if _context().extra.verbatim and expr[_context().extra.verbatim] is not None:
             return generateVerbatim(expr, precedence)
 
         result = getattr(self, expr.type or Syntax.Property)(expr, precedence, flags)
         
-        if extra.comment:
+        if _context().extra.comment:
             result = addComments(expr, result)
 
         return toSourceNodeWhenNeeded(result, expr)
@@ -2495,12 +2509,12 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
 
         # Attach comments
         
-        if extra.comment:
+        if _context().extra.comment:
             result = addComments(stmt, result)
         
         fragment = toSourceNodeWhenNeeded(result, toString=True)
-        if stmt.type == Syntax.Program and (not safeConcatenation) and newline == '' and (fragment[len(fragment) - 1] == '\n'):
-            result = toSourceNodeWhenNeeded(result).replaceRight('\s+$', '') if sourceMap else re.compile('\s+$').sub('', fragment)
+        if stmt.type == Syntax.Program and (not _context().safeConcatenation) and _context().newline == '' and (fragment[len(fragment) - 1] == '\n'):
+            result = toSourceNodeWhenNeeded(result).replaceRight('\s+$', '') if _context().sourceMap else re.compile('\s+$').sub('', fragment)
         
         return toSourceNodeWhenNeeded(result, stmt)
 
