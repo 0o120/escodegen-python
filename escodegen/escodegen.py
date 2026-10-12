@@ -880,7 +880,12 @@ def addComments(stmt, result):
 
         save = result
         
-        if _context().preserveBlankLines:
+        inline = (not _context().preserveBlankLines and isExpression(stmt) and
+                  all(comment.type == 'Block' and not hasLineTerminator(comment.value)
+                      for comment in stmt.leadingComments))
+        if inline:
+            result = [[generateComment(comment), ' '] for comment in stmt.leadingComments]
+        elif _context().preserveBlankLines:
             comment = stmt.leadingComments[0]
             result = []
         
@@ -911,6 +916,7 @@ def addComments(stmt, result):
                 prevRange = _range
                 i += 1
 
+            extRange = comment.extendedRange or comment.range
             suffix = _context().sourceCode[_range[1]:extRange[1]]
             count = len(re.compile('\n').findall(suffix) or [])
             result.append(stringRepeat('\n', count))
@@ -930,24 +936,24 @@ def addComments(stmt, result):
                     fragment.append('\n')
                 result.append(addIndent(fragment))
         
-        result.append(addIndent(save))
+        result.append(save if inline else addIndent(save))
     
     if stmt.trailingComments:
         
         if _context().preserveBlankLines:
-            comment = stmt.trailingComments[0]
-            extRange = comment.extendedRange or comment.range
-            _range = comment.range
-            
-            prefix = _context().sourceCode[extRange[0]:_range[0]]
-            count = len(re.compile('\n').findall(prefix) or [])
-            
-            if count > 0:
-                result.append(stringRepeat('\n', count))
-                result.append(addIndent(generateComment(comment)))
-            else:
-                result.append(prefix)
-                result.append(generateComment(comment))
+            previous_end = None
+            for comment in stmt.trailingComments:
+                extRange = comment.extendedRange or comment.range
+                _range = comment.range
+                prefix = _context().sourceCode[extRange[0] if previous_end is None else previous_end:_range[0]]
+                count = len(re.compile('\n').findall(prefix) or [])
+                if count > 0:
+                    result.append(stringRepeat('\n', count))
+                    result.append(addIndent(generateComment(comment)))
+                else:
+                    result.append(prefix)
+                    result.append(generateComment(comment))
+                previous_end = _range[1]
         else:
             tailingToStatement = not endsWithLineTerminator(toSourceNodeWhenNeeded(result, toString=True))
             specialBase = stringRepeat(' ', calculateSpaces(toSourceNodeWhenNeeded([_context().base, result, _context().indent], toString=True)))
@@ -1442,12 +1448,14 @@ class CodeGeneratorStatement:
         # 12.4 '{', 'function', 'class' is not allowed in this position.
         # wrap expression with parentheses
         fragment = toSourceNodeWhenNeeded(result, toString=True)
+        first = self.firstExpression(stmt.expression)
         if (fragment.startswith('{') or
+                first.type in (Syntax.ObjectExpression, Syntax.ObjectPattern, Syntax.FunctionExpression, Syntax.ClassExpression) or
                 # ObjectExpression
                 isClassPrefixed(fragment) or
                 isFunctionPrefixed(fragment) or
                 isAsyncPrefixed(fragment) or
-                bool(re.match(r'^let\s*\[', fragment)) or
+                bool(re.match(r'^let\s*\[', fragment)) or self.startsWithLetBracket(stmt.expression) or
                 (_context().directive and (flags & F_DIRECTIVE_CTX) and
                  stmt.directive is None and stmt.expression.type == Syntax.Literal and
                  isinstance(stmt.expression.value, str) and stmt.expression.value != 'use strict')
@@ -2571,6 +2579,40 @@ class CodeGeneratorExpression:
         return ['<>', [self.generateExpression(child, Precedence.Primary, E_TTT) for child in expr.children], '</>']
 
 class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
+
+    def firstExpression(self, node):
+        while True:
+            if node.type in (Syntax.AssignmentExpression, Syntax.BinaryExpression, Syntax.LogicalExpression):
+                node = node.left
+            elif node.type == Syntax.ConditionalExpression:
+                node = node.test
+            elif node.type == Syntax.SequenceExpression:
+                node = node.expressions[0]
+            elif node.type == Syntax.MemberExpression:
+                node = node.object
+            elif node.type == Syntax.CallExpression:
+                node = node.callee
+            elif node.type == Syntax.ChainExpression:
+                node = node.expression
+            elif node.type == Syntax.TaggedTemplateExpression:
+                node = node.tag
+            else:
+                return node
+
+    def startsWithLetBracket(self, node):
+        if node.type == Syntax.MemberExpression and node.computed and not node.optional:
+            return node.object.type == Syntax.Identifier and node.object.name == 'let'
+        if node.type in (Syntax.AssignmentExpression, Syntax.BinaryExpression, Syntax.LogicalExpression):
+            return self.startsWithLetBracket(node.left)
+        if node.type == Syntax.ConditionalExpression:
+            return self.startsWithLetBracket(node.test)
+        if node.type == Syntax.SequenceExpression:
+            return self.startsWithLetBracket(node.expressions[0])
+        if node.type == Syntax.CallExpression:
+            return self.startsWithLetBracket(node.callee)
+        if node.type == Syntax.ChainExpression:
+            return self.startsWithLetBracket(node.expression)
+        return False
 
     def literalValuesEqual(self, left, right):
         if left.regex is not None or right.regex is not None:

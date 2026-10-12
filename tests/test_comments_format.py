@@ -49,6 +49,30 @@ class CommentFormatTests(unittest.TestCase):
         self.assertIn('/*\n', code)
         self.assertTrue(code.endswith('*/'))
 
+    def test_preserve_multiple_leading_and_trailing_comments(self):
+        source = '/*a*/\n/*b*/\nx; /*c*/ /*d*/'
+        comments = []
+        for name in 'abcd':
+            start = source.index('/*' + name)
+            comments.append({'type': 'Block', 'value': name, 'range': [start, start + 5],
+                             'extendedRange': [start, start + 5]})
+        comments[1]['extendedRange'][1] = source.index('x;')
+        comments[2]['extendedRange'][0] = source.index('x;') + 2
+        ast = {'type': 'ExpressionStatement', 'expression': {'type': 'Identifier', 'name': 'x'},
+               'leadingComments': comments[:2], 'trailingComments': comments[2:]}
+        code = generate(ast, {'comment': True, 'sourceCode': source,
+                              'format': {'preserveBlankLines': True}})
+        for name in 'abcd':
+            self.assertIn('/*' + name + '*/', code)
+
+    def test_async_method_inline_key_comments_keep_restricted_boundary(self):
+        ast = {'type': 'ObjectExpression', 'properties': [{'type': 'Property', 'method': True, 'kind': 'init',
+            'key': {'type': 'Identifier', 'name': 'f', 'leadingComments': [{'type': 'Block', 'value': 'inline'}]},
+            'value': {'type': 'FunctionExpression', 'async': True, 'params': [],
+                      'body': {'type': 'BlockStatement', 'body': []}}}]}
+        code = generate(ast, {'comment': True})
+        self.assertIn('async /*inline*/ f()', code)
+
     def test_jsx_spread_children_and_text_escaping(self):
         ast = {'type': 'JSXFragment', 'children': [
             {'type': 'JSXText', 'value': '<&{text}'},

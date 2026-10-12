@@ -43,6 +43,17 @@ class StatementTests(unittest.TestCase):
             self.assertTrue(generate(statement(expr)).startswith('(let['))
 
     @unittest.skipUnless(shutil.which('node'), 'Node required')
+    def test_expression_statement_guards_work_with_leading_comments(self):
+        function = {'type': 'FunctionExpression', 'params': [], 'leadingComments': [{'type': 'Block', 'value': 'inline'}],
+                    'body': {'type': 'BlockStatement', 'body': [{'type': 'ReturnStatement', 'argument': lit(1)}]}}
+        code = generate(statement({'type': 'CallExpression', 'callee': function, 'arguments': []}), {'comment': True})
+        self.assertEqual(execute('console.log(JSON.stringify(eval(' + json.dumps(code) + ')))'), 1)
+
+        member = {'type': 'MemberExpression', 'object': ident('let'), 'computed': True, 'property': ident('a'),
+                  'leadingComments': [{'type': 'Block', 'value': 'inline'}]}
+        self.assertTrue(generate(statement(member), {'comment': True}).startswith('('))
+
+    @unittest.skipUnless(shutil.which('node'), 'Node required')
     def test_restricted_return_and_throw_comments(self):
         argument = lit(1)
         argument['leadingComments'] = [{'type': 'Block', 'value': 'inline'}]
