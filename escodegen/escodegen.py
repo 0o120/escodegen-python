@@ -34,6 +34,7 @@ import math
 import esutils
 import html
 from collections.abc import Mapping
+from functools import wraps
 from .sourcemap import SourceNode
 
 
@@ -48,9 +49,24 @@ _generation_context = ContextVar('escodegen_context')
 def _context():
     return _generation_context.get()
 
+
+def generationNode(method):
+    @wraps(method)
+    def guarded(self, node, *args):
+        identity = id(node)
+        active = _context().activeNodes
+        if identity in active:
+            raise ValueError('Cyclic AST child graph detected')
+        active.add(identity)
+        try:
+            return method(self, node, *args)
+        finally:
+            active.remove(identity)
+    return guarded
+
 def generate(node, options=None):
     """Generate without mutating input ASTs or sharing formatting state."""
-    token = _generation_context.set(SimpleNamespace())
+    token = _generation_context.set(SimpleNamespace(activeNodes=set()))
     try:
         return _generate(node, options)
     finally:
@@ -2741,6 +2757,7 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
 
         return ';'
     
+    @generationNode
     def generateExpression(self, expr, precedence, flags):
 
         if not isinstance(expr, SimpleObj) or not isinstance(expr.type, str):
@@ -2759,6 +2776,7 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
 
         return toSourceNodeWhenNeeded(result, expr)
     
+    @generationNode
     def generateStatement(self, stmt, flags):
         if not isinstance(stmt, SimpleObj) or not isinstance(stmt.type, str):
             raise ValueError('Expected an ESTree statement with a string type field')

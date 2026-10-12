@@ -48,6 +48,15 @@ class ContextTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'IdentifierName'):
                 generate({'type': 'Identifier', 'name': name})
 
+    def test_custom_metadata_cycles_are_preserved_but_child_cycles_fail(self):
+        ast = {'type': 'Literal', 'value': 1}
+        ast['metadata'] = ast
+        self.assertEqual(generate(ast), '1')
+        bad = {'type': 'UnaryExpression', 'operator': '!'}
+        bad['argument'] = bad
+        with self.assertRaisesRegex(ValueError, 'Cyclic AST child graph'):
+            generate(bad)
+
 
 if __name__ == '__main__':
     unittest.main()

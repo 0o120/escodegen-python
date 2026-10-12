@@ -7,8 +7,10 @@ import unittest
 from escodegen import generate
 
 
+OWN_REFERENCE = Path(__file__).resolve().parents[1] / 'tools' / 'reference' / 'node_modules'
+SHARED_REFERENCE = Path(__file__).resolve().parents[2] / 'esprima-python' / 'tools' / 'reference' / 'node_modules'
 REFERENCE = Path(os.environ.get('ESCODEGEN_REFERENCE_NODE_MODULES',
-    str(Path(__file__).resolve().parents[2] / 'esprima-python' / 'tools' / 'reference' / 'node_modules')))
+    str(OWN_REFERENCE if OWN_REFERENCE.exists() else SHARED_REFERENCE)))
 
 
 def at(node, line, column, source='input.js'):
