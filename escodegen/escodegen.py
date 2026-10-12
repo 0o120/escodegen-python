@@ -40,7 +40,7 @@ from .sourcemap import SourceNode
 
 
 from contextvars import ContextVar
-from types import FunctionType, GetSetDescriptorType, MethodType, SimpleNamespace
+from types import FunctionType, GetSetDescriptorType, SimpleNamespace
 
 _generation_context = ContextVar('escodegen_context')
 
@@ -480,11 +480,21 @@ def prepareNativeGraph(node, containers):
             continue
         compatible = classes.get(cls)
         if compatible is None:
-            getter = getattr(cls, '__getattr__', None)
-            code = getter.__code__ if type(getter) in (FunctionType, MethodType) else None
+            getter = None
+            attributeGetter = None
+            getterFound = attributeGetterFound = False
+            for base in cls.__mro__:
+                declared = vars(base)
+                if not getterFound and '__getattr__' in declared:
+                    getter = declared['__getattr__']
+                    getterFound = True
+                if not attributeGetterFound and '__getattribute__' in declared:
+                    attributeGetter = declared['__getattribute__']
+                    attributeGetterFound = True
+            code = getter.__code__ if type(getter) is FunctionType else None
             compatible = (type(cls) is type and not issubclass(cls, Mapping) and
                           cls.__dictoffset__ != 0 and
-                          cls.__getattribute__ is object.__getattribute__ and
+                          attributeGetter is object.__getattribute__ and
                           code is not None and code.co_code == pureGetter.co_code and
                           code.co_consts == pureGetter.co_consts and not code.co_freevars and
                           code.co_argcount == 2 and code.co_kwonlyargcount == 0 and

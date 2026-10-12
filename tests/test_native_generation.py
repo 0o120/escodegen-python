@@ -147,6 +147,28 @@ class NativeGenerationTests(unittest.TestCase):
                     body=Native(type='BlockStatement', body=[]))
         self.assertEqual(generate(node), 'function () {\n}')
 
+    def test_attribute_descriptors_and_static_binding_use_the_snapshot(self):
+        class MissingDescriptor:
+            def __get__(self, instance, owner):
+                return Native.__getattr__ if instance is None else lambda name: True
+        class WithMissing(Native):
+            __getattr__ = MissingDescriptor()
+        self.assertEqual(generate(WithMissing(type='Literal', value=1)), '1')
+        class AttributeDescriptor:
+            def __get__(self, instance, owner):
+                if instance is None:
+                    return object.__getattribute__
+                return lambda name: 9 if name == 'value' else object.__getattribute__(instance, name)
+        class WithAttribute(Native):
+            __getattribute__ = AttributeDescriptor()
+        self.assertEqual(generate(WithAttribute(type='Literal', value=1)), '1')
+        class StaticMissing(Native):
+            __getattr__ = staticmethod(Native.__getattr__)
+        self.assertEqual(generate(StaticMissing(type='Literal', value=1)), '1')
+        class DisabledMissing(Native):
+            __getattr__ = None
+        self.assertEqual(generate(DisabledMissing(type='Literal', value=1)), '1')
+
 
 if __name__ == '__main__':
     unittest.main()
