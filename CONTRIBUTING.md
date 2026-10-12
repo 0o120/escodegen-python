@@ -33,5 +33,7 @@ wheel from the source archive and smoke-test an isolated coordinated install.
 GitHub Actions checks out the modernization esutils branch, with a manual
 `dependency-ref` override. After the coordinated release, switch to its
 verified release tag. Python 3.15 uses prereleases until stable is available.
+The full Python matrix runs on Windows/Linux, with an additional Python 3.14
+macOS smoke job; each job retains its validated package artifacts.
 Publishing packages, pushing branches and changing external PR state require
 the owner's separate release instruction.

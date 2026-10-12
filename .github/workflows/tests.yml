@@ -15,27 +15,30 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python: ['3.11', '3.12', '3.13', '3.14', '3.15']
+        include:
+          - os: macos-latest
+            python: '3.14'
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           path: generator
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           repository: 0o120/esutils-python
           # Switch to the verified release tag after coordinated publication.
           ref: ${{ inputs.dependency-ref || 'codex/modernize-ecmascript-2026' }}
           path: utilities
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           repository: 0o120/esprima-python
           ref: ${{ inputs.dependency-ref || 'codex/modernize-ecmascript-2026' }}
           path: parser
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7.0.0
         with:
           python-version: ${{ matrix.python }}
           allow-prereleases: true
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: '24'
           cache: npm
@@ -51,3 +54,7 @@ jobs:
         working-directory: generator
       - run: python -m twine check dist/*
         working-directory: generator
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: escodegen-${{ matrix.os }}-python-${{ matrix.python }}
+          path: generator/dist/*
