@@ -34,7 +34,6 @@ import math
 import esutils
 import html
 from collections.abc import Mapping
-from functools import wraps
 from .sourcemap import SourceNode
 
 
@@ -46,24 +45,7 @@ from types import GetSetDescriptorType, SimpleNamespace
 
 _generation_context = ContextVar('escodegen_context')
 
-def _context():
-    return _generation_context.get()
-
-
-def generationNode(method):
-    @wraps(method)
-    def guarded(self, node, *args):
-        validateNodeFields(node)
-        identity = id(node)
-        active = _context().activeNodes
-        if identity in active:
-            raise ValueError('Cyclic AST child graph detected')
-        active.add(identity)
-        try:
-            return method(self, node, *args)
-        finally:
-            active.remove(identity)
-    return guarded
+_context = _generation_context.get
 
 
 _NODE_LIST_FIELDS = {
@@ -97,19 +79,22 @@ _NODE_CHILD_FIELDS = {
 }
 
 
-def validateNodeFields(node):
-    if type(node) not in _context().nodeTypes or not isinstance(node.type, str):
+def validateNodeFields(node, context=None):
+    context = _context() if context is None else context
+    nodeTypes = context.nodeTypes
+    if type(node) not in nodeTypes or not isinstance(node.type, str):
         raise ValueError('Expected an ESTree node with a string type field')
-    field = _NODE_LIST_FIELDS.get(node.type)
+    nodeType = node.type
+    field = _NODE_LIST_FIELDS.get(nodeType)
     if field is not None and not isinstance(getattr(node, field), list):
-        raise ValueError(f'{node.type}.{field} must be a list')
-    if node.type in ('SequenceExpression', 'VariableDeclaration') and not getattr(node, field):
-        raise ValueError(f'{node.type}.{field} cannot be empty')
-    for field in _NODE_CHILD_FIELDS.get(node.type, ()):
+        raise ValueError(f'{nodeType}.{field} must be a list')
+    if nodeType in ('SequenceExpression', 'VariableDeclaration') and not getattr(node, field):
+        raise ValueError(f'{nodeType}.{field} cannot be empty')
+    for field in _NODE_CHILD_FIELDS.get(nodeType, ()):
         child = getattr(node, field)
-        if type(child) not in _context().nodeTypes or not isinstance(child.type, str):
-            raise ValueError(f'{node.type}.{field} must contain an ESTree node')
-    if node.type == 'Literal' and 'value' not in vars(node) and node.regex is None and node.bigint is None:
+        if type(child) not in nodeTypes or not isinstance(child.type, str):
+            raise ValueError(f'{nodeType}.{field} must contain an ESTree node')
+    if nodeType == 'Literal' and 'value' not in vars(node) and node.regex is None and node.bigint is None:
         raise ValueError('Literal.value is required; use an explicit None for null')
 
 def generate(node, options=None):
@@ -2885,6 +2870,9 @@ class CodeGeneratorExpression:
 
 class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
 
+    def __init__(self):
+        self.context = _context()
+
     def preservedTrivia(self, start, end, comments):
         result = []
         cursor = start
@@ -3156,44 +3144,69 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
 
         return ';'
     
-    @generationNode
     def generateExpression(self, expr, precedence, flags):
-
-        if type(expr) not in _context().nodeTypes or not isinstance(expr.type, str):
-            raise ValueError('Expected an ESTree expression with a string type field')
-
-        if _context().extra.verbatim and getattr(expr, _context().extra.verbatim) is not None:
-            return generateVerbatim(expr, precedence)
-
-        handler = getattr(self, expr.type, None)
-        if handler is None or not hasattr(CodeGeneratorExpression, expr.type):
-            raise ValueError('Unsupported ESTree expression type: ' + expr.type)
-        result = handler(expr, precedence, flags)
-        
-        if _context().extra.comment:
-            result = addComments(expr, result)
-
-        return toSourceNodeWhenNeeded(result, expr)
+        context = self.context
+        validateNodeFields(expr, context)
+        identity = id(expr)
+        active = context.activeNodes
+        if identity in active:
+            raise ValueError('Cyclic AST child graph detected')
+        active.add(identity)
+        try:
+            if context.extra.verbatim and getattr(expr, context.extra.verbatim) is not None:
+                return generateVerbatim(expr, precedence)
+            if type(self) is CodeGenerator:
+                handler = _EXPRESSION_HANDLERS.get(expr.type)
+                if handler is None:
+                    raise ValueError('Unsupported ESTree expression type: ' + expr.type)
+                result = handler(self, expr, precedence, flags)
+            else:
+                handler = getattr(self, expr.type, None)
+                if handler is None or not hasattr(CodeGeneratorExpression, expr.type):
+                    raise ValueError('Unsupported ESTree expression type: ' + expr.type)
+                result = handler(expr, precedence, flags)
+            if context.extra.comment:
+                result = addComments(expr, result)
+            return toSourceNodeWhenNeeded(result, expr)
+        finally:
+            active.remove(identity)
     
-    @generationNode
     def generateStatement(self, stmt, flags):
-        if type(stmt) not in _context().nodeTypes or not isinstance(stmt.type, str):
-            raise ValueError('Expected an ESTree statement with a string type field')
-        handler = getattr(self, stmt.type, None)
-        if handler is None or not hasattr(CodeGeneratorStatement, stmt.type):
-            raise ValueError('Unsupported ESTree statement type: ' + stmt.type)
-        result = handler(stmt, flags)
+        context = self.context
+        validateNodeFields(stmt, context)
+        identity = id(stmt)
+        active = context.activeNodes
+        if identity in active:
+            raise ValueError('Cyclic AST child graph detected')
+        active.add(identity)
+        try:
+            if type(self) is CodeGenerator:
+                handler = _STATEMENT_HANDLERS.get(stmt.type)
+                if handler is None:
+                    raise ValueError('Unsupported ESTree statement type: ' + stmt.type)
+                result = handler(self, stmt, flags)
+            else:
+                handler = getattr(self, stmt.type, None)
+                if handler is None or not hasattr(CodeGeneratorStatement, stmt.type):
+                    raise ValueError('Unsupported ESTree statement type: ' + stmt.type)
+                result = handler(stmt, flags)
+            if context.extra.comment:
+                result = addComments(stmt, result)
+            if stmt.type == Syntax.Program and (not context.safeConcatenation) and context.newline == '':
+                fragment = toSourceNodeWhenNeeded(result, toString=True)
+                if fragment.endswith('\n'):
+                    result = toSourceNodeWhenNeeded(result).replaceRight(r'\s+$', '') if context.sourceMap else re.compile(r'\s+$').sub('', fragment)
+                elif not context.sourceMap:
+                    return fragment
+            return toSourceNodeWhenNeeded(result, stmt)
+        finally:
+            active.remove(identity)
 
-        # Attach comments
-        
-        if _context().extra.comment:
-            result = addComments(stmt, result)
-        
-        fragment = toSourceNodeWhenNeeded(result, toString=True)
-        if stmt.type == Syntax.Program and (not _context().safeConcatenation) and _context().newline == '' and fragment.endswith('\n'):
-            result = toSourceNodeWhenNeeded(result).replaceRight(r'\s+$', '') if _context().sourceMap else re.compile(r'\s+$').sub('', fragment)
-        
-        return toSourceNodeWhenNeeded(result, stmt)
+
+_EXPRESSION_HANDLERS = {name: handler for name, handler in vars(CodeGeneratorExpression).items()
+                        if not name.startswith('_') and callable(handler)}
+_STATEMENT_HANDLERS = {name: handler for name, handler in vars(CodeGeneratorStatement).items()
+                       if not name.startswith('_') and callable(handler)}
 
 
 
