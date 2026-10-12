@@ -345,6 +345,7 @@ def getDefaultOptions():
             'comprehensionExpressionStartsWithAssignment': False,
             'starlessGenerator': False
         }),
+        'extensions': SimpleObj({'resourceManagement': False}),
         'sourceMap': None,
         'sourceMapRoot': None,
         'sourceMapWithCode': False,
@@ -661,6 +662,8 @@ def toSourceNodeWhenNeeded(generated, node=None, toString=False):
     if node.loc is None:
         sn = SourceNode(None, None, _context().sourceMap, generated, node.name or None)
     else:
+        if node.loc.start is None:
+            raise ValueError('source-map loc must contain a start position')
         sn = SourceNode(node.loc.start.line, node.loc.start.column, (node.loc.source or 'source.js') if _context().sourceMap == True else _context().sourceMap, generated, node.name or None)
     return sn.toString() if toString else sn
 
@@ -1541,6 +1544,11 @@ class CodeGeneratorStatement:
         return self.generatePattern(stmt.id, Precedence.Assignment, itemFlags)
         
     def VariableDeclaration(self, stmt, flags):
+        if stmt.kind in ('using', 'await using'):
+            if not _context().extra.extensions.resourceManagement:
+                raise ValueError('Resource declarations require extensions.resourceManagement')
+        elif stmt.kind not in ('var', 'let', 'const'):
+            raise ValueError('Unsupported VariableDeclaration.kind: ' + str(stmt.kind))
         # VariableDeclarator is typed as Statement,
         # but joined with comma (not LineTerminator).
         # So if comment is attached to target node, we should specialize.

@@ -1,14 +1,16 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.32.4,<2"]
 build-backend = "hatchling.build"
 
 [project]
 name = "escodegen"
-version = "1.0.11"
+dynamic = ["version"]
 authors = [
 	{ name="0x78", email="contact@0x78.com" }
 ]
-requires-python = ">=3.6"
+requires-python = ">=3.11"
+license = "BSD-2-Clause"
+license-files = ["LICENSE"]
 description = "ECMAScript code generator"
 readme = "README.md"
 keywords = [
@@ -20,18 +22,37 @@ keywords = [
 	"ast"
 ]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: BSD License",
     "Topic :: Software Development :: Code Generators",
     "Topic :: Software Development :: Compilers",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Text Processing :: General",
-    "Programming Language :: Python :: 3.6"
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15"
 ]
 dependencies = [
-	"esutils"
+	"esutils>=2,<3"
 ]
 
 [project.urls]
 "Homepage" = "https://github.com/0o120/escodegen-python"
+"Source" = "https://github.com/0o120/escodegen-python"
+"Issues" = "https://github.com/0o120/escodegen-python/issues"
+
+[project.optional-dependencies]
+integration = ["esprima-fork>=5.0.0.dev0,<6", "acornwalk>=2,<3"]
+
+[tool.hatch.version]
+path = "escodegen/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["escodegen"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/escodegen", "/tests", "/tools", "/README.md", "/CHANGELOG.md", "/CONTRIBUTING.md", "/requirements-dev.txt", "/pyproject.toml", "/LICENSE"]
+exclude = ["/tools/reference/node_modules"]

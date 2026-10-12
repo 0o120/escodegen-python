@@ -73,6 +73,8 @@ class SourceMap:
 
 class SourceNode:
     def __init__(self, line=None, column=None, source=None, children=None, name=None):
+        if source is not None and not isinstance(source, str):
+            raise ValueError('source-map source names must be strings')
         if line is not None and (not isinstance(line, int) or line < 1 or
                                  not isinstance(column, int) or column < 0):
             raise ValueError('source-map locations require line >= 1 and UTF-16 column >= 0')

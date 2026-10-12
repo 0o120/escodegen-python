@@ -1,0 +1,48 @@
+name: Tests and package builds
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      dependency-ref:
+        description: Coordinated esutils revision
+        default: codex/modernize-ecmascript-2026
+        type: string
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12', '3.13', '3.14', '3.15']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: generator
+      - uses: actions/checkout@v4
+        with:
+          repository: 0o120/esutils-python
+          # Switch to the verified release tag after coordinated publication.
+          ref: ${{ inputs.dependency-ref || 'codex/modernize-ecmascript-2026' }}
+          path: utilities
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: generator/tools/reference/package-lock.json
+      - run: python -m pip install -r generator/requirements-dev.txt ./utilities ./generator
+      - run: npm ci --prefix tools/reference --ignore-scripts
+        working-directory: generator
+      - run: python -W error -m compileall -q -f escodegen
+        working-directory: generator
+      - run: python -m unittest discover -s tests -v
+        working-directory: generator
+      - run: python -m build
+        working-directory: generator
+      - run: python -m twine check dist/*
+        working-directory: generator

@@ -24,6 +24,12 @@ def syntax_check(source, module=False):
 
 @unittest.skipUnless(shutil.which('node'), 'Node required')
 class ModernTests(unittest.TestCase):
+    def test_resource_management_is_an_explicit_extension(self):
+        ast = {'type': 'VariableDeclaration', 'kind': 'using', 'declarations': [
+            {'type': 'VariableDeclarator', 'id': identifier('resource'), 'init': identifier('value')}]}
+        with self.assertRaisesRegex(ValueError, 'extensions.resourceManagement'):
+            generate(ast)
+        self.assertEqual(generate(ast, {'extensions': {'resourceManagement': True}}), 'using resource = value;')
     def test_bigint_exact_value_and_invalid_descriptors(self):
         code = generate(literal(None, bigint='9007199254740993123456789'))
         result = subprocess.run(['node', '-e', 'console.log(String(' + code + '))'], text=True, capture_output=True, check=True)
