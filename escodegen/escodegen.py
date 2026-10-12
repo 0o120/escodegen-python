@@ -926,6 +926,12 @@ def adjustMultilineComment(value, specialBase):
     return '\n'.join(array)
     
 def generateComment(comment, specialBase=None):
+    if comment.type not in ('Line', 'Block') or not isinstance(comment.value, str):
+        raise ValueError('Comments require a Line/Block type and string value')
+    if comment.type == 'Block' and '*/' in comment.value:
+        raise ValueError('Block comment value cannot contain its closing delimiter')
+    if comment.type == 'Line' and hasLineTerminator(comment.value.rstrip('\r\n\u2028\u2029')):
+        raise ValueError('Line comment value cannot contain an internal line terminator')
     if comment.type == 'Line':
         if endsWithLineTerminator(comment.value):
             return '//' + comment.value
@@ -1218,6 +1224,8 @@ def _generate(node, options=None):
 class CodeGeneratorStatement:
     
     def BlockStatement(self, stmt, flags):
+        if not stmt.body and _context().preserveBlankLines:
+            return self.preservedEmptyContainer(stmt, '{', '}')
         _range = None
         content = None
         result = ['{', _context().newline]
@@ -1312,6 +1320,8 @@ class CodeGeneratorStatement:
         return 'continue' + self.semicolon(flags)
     
     def ClassBody(self, stmt, flags):
+        if not stmt.body and _context().preserveBlankLines:
+            return self.preservedEmptyContainer(stmt, '{', '}')
         if not stmt.body and _context().extra.comment and stmt.innerComments:
             return self.emptyContainer(stmt, '{', '}')
         result = [ '{', _context().newline]
@@ -2311,6 +2321,10 @@ class CodeGeneratorExpression:
                 raise ValueError('StaticBlock.range must cover the static keyword and block braces')
             opening = len(source[:prefix.end() - 1].encode('utf-16-le', 'surrogatepass')) // 2
             block.range = [expr.range[0] + opening, expr.range[1]]
+            preceding = [comment for comment in expr.innerComments or [] if comment.range and comment.range[0] < block.range[0]]
+            block.innerComments = [comment for comment in expr.innerComments or [] if comment not in preceding]
+            trivia = self.preservedTrivia(expr.range[0] + 6, block.range[0], preceding)
+            return ['static', trivia, self.generateStatement(block, S_TFFF)]
         return ['static', _context().space, self.generateStatement(block, S_TFFF)]
     
     def Property(self, expr, precedence, flags):
@@ -2687,7 +2701,35 @@ class CodeGeneratorExpression:
 
 class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
 
+    def preservedTrivia(self, start, end, comments):
+        result = []
+        cursor = start
+        def whitespace(text):
+            return ''.join(character for character in text if esutils.code.isWhiteSpace(ord(character)) or
+                           esutils.code.isLineTerminator(ord(character)))
+        for comment in comments if _context().extra.comment else []:
+            if comment.range is None or comment.range[0] < cursor or comment.range[1] > end:
+                raise ValueError('Inner comment ranges must be ordered within their container')
+            result.append(whitespace(_context().sourceCode[cursor:comment.range[0]]))
+            result.append(toSourceNodeWhenNeeded(generateComment(comment), comment))
+            cursor = comment.range[1]
+            if comment.type == 'Line' and not hasLineTerminator(_context().sourceCode[cursor:end]):
+                result.append('\n')
+        result.append(whitespace(_context().sourceCode[cursor:end]))
+        return result
+
+    def preservedEmptyContainer(self, node, opening, closing):
+        if node.range is None:
+            raise ValueError(f'{node.type}.range is required to preserve blank lines')
+        start, end = node.range
+        source = _context().sourceCode[start:end]
+        if not source.startswith(opening) or not source.endswith(closing):
+            raise ValueError(f'{node.type}.range must cover its container delimiters')
+        return [opening, self.preservedTrivia(start + 1, end - 1, node.innerComments or []), closing]
+
     def emptyContainer(self, node, opening, closing):
+        if _context().preserveBlankLines and node.range is not None:
+            return self.preservedEmptyContainer(node, opening, closing)
         if not _context().extra.comment or not node.innerComments:
             return opening + closing
         result = [opening, _context().newline]

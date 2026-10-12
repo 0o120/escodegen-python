@@ -93,12 +93,27 @@ class CommentFormatTests(unittest.TestCase):
 
     def test_static_block_blank_lines_use_actual_brace_range(self):
         source = 'static /*{\U0001f600}*/ {\n/*license*/\n}'
+        start = len(source[:source.index('/*license*/')].encode('utf-16-le')) // 2
         ast = {'type': 'StaticBlock', 'body': [],
+               'innerComments': [{'type': 'Block', 'value': 'license', 'range': [start, start + 11]}],
                'range': [0, len(source.encode('utf-16-le')) // 2]}
         code = generate(ast, {'comment': True, 'sourceCode': source,
                               'format': {'preserveBlankLines': True}})
         self.assertIn('{\n/*license*/\n}', code)
         self.assertEqual(code.count('license'), 1)
+
+    def test_blank_line_preservation_does_not_restore_removed_code(self):
+        ast = {'type': 'BlockStatement', 'body': [], 'range': [0, 12]}
+        code = generate(ast, {'sourceCode': '{ return 1;}', 'format': {'preserveBlankLines': True}})
+        self.assertNotIn('return', code)
+
+    def test_blank_line_preservation_uses_current_inner_comment_value(self):
+        ast = {'type': 'BlockStatement', 'body': [], 'range': [0, 9],
+               'innerComments': [{'type': 'Block', 'value': 'new', 'range': [1, 8]}]}
+        code = generate(ast, {'comment': True, 'sourceCode': '{/*old*/}',
+                              'format': {'preserveBlankLines': True}})
+        self.assertIn('/*new*/', code)
+        self.assertNotIn('old', code)
 
     def test_jsx_spread_children_and_text_escaping(self):
         ast = {'type': 'JSXFragment', 'children': [
