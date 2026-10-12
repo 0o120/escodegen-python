@@ -1,0 +1,8 @@
+{
+  "upstream": "https://github.com/estools/escodegen",
+  "release": "2.1.0",
+  "archive": "https://codeload.github.com/estools/escodegen/tar.gz/refs/tags/v2.1.0",
+  "sha256": "ee48c40dae22d7f7993dff39fccb023251403d074bd99aeb99007d3c45f0c7a2",
+  "fixture_files": 100,
+  "scope": "All comparison corpus files for standard ECMAScript syntax; Mozilla extensions excluded."
+}

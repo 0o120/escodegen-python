@@ -9,9 +9,10 @@ from escodegen import generate
 
 class NumberRegexTests(unittest.TestCase):
     def test_number_domain_and_negative_zero_policy(self):
-        for value in [10 ** 1000, 9007199254740993]:
+        for value in [10 ** 1000]:
             with self.assertRaisesRegex(ValueError, 'bigint'):
                 generate({'type': 'Literal', 'value': value})
+        self.assertEqual(generate({'type': 'Literal', 'value': 9007199254740993}), '9007199254740992.0')
         with self.assertRaisesRegex(ValueError, 'NaN'):
             generate({'type': 'Literal', 'value': math.nan})
         self.assertEqual(generate({'type': 'Literal', 'value': -0.0}), '-0')

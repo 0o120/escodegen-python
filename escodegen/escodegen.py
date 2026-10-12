@@ -420,8 +420,12 @@ def generateNumber(value):
         number = float(value)
     except OverflowError as error:
         raise ValueError('Number literal exceeds binary64; use Literal.bigint for exact integers') from error
-    if isinstance(value, int) and (not math.isfinite(number) or int(number) != value):
-        raise ValueError('Number literal is not exactly representable; use Literal.bigint for exact integers')
+    if isinstance(value, int) and not math.isfinite(number):
+        raise ValueError('Number literal exceeds binary64; use Literal.bigint for exact integers')
+    if isinstance(value, int) and int(number) != value:
+        # JSON decoders commonly deliver integers for JS Number spellings.
+        # Apply JavaScript's binary64 rounding; BigInt is the exact API.
+        value = number
     if math.isnan(number):
         raise ValueError('Number literal cannot be NaN')
     if math.isinf(number):
@@ -650,7 +654,7 @@ def toSourceNodeWhenNeeded(generated, node=None, toString=False):
     
     if node is None:
         if isinstance(generated, SourceNode):
-            return generated
+            return generated.toString() if toString else generated
         else:
             node = SimpleObj()
             
@@ -758,6 +762,36 @@ def validateSourceRanges(node):
             for item in value:
                 visit(item)
     visit(node)
+
+
+def extractHashbang(node):
+    hashbang = node.hashbang if node.type == Syntax.Program else None
+    seen = set()
+    def visit(value):
+        nonlocal hashbang
+        if isinstance(value, SimpleObj):
+            if id(value) in seen:
+                return
+            seen.add(id(value))
+            for key in ('comments', 'leadingComments', 'trailingComments', 'innerComments'):
+                comments = value[key]
+                if comments:
+                    for comment in comments:
+                        if comment.hashbang or comment.type == 'Hashbang':
+                            text = comment.value.removeprefix('#!')
+                            if hashbang is not None and hashbang != text:
+                                raise ValueError('Conflicting Program/comment hashbang metadata')
+                            hashbang = text
+                    value[key] = [comment for comment in comments if not comment.hashbang and comment.type != 'Hashbang']
+            for key in value:
+                visit(value[key])
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+    visit(node)
+    if hashbang is not None and (not isinstance(hashbang, str) or hasLineTerminator(hashbang)):
+        raise ValueError('Program.hashbang must contain one line excluding #!')
+    return hashbang
 
 def adjustMultilineComment(value, specialBase):
     pass
@@ -1046,13 +1080,25 @@ def _generate(node, options=None):
     
     _context().preserveBlankLines = options.format.preserveBlankLines and not _context().sourceCode is None
 
+    if options.format.quotes not in ('single', 'double', 'auto'):
+        raise ValueError('format.quotes must be single, double or auto')
+    for field in ('space', 'newline'):
+        if not isinstance(options.format[field], str):
+            raise TypeError(f'format.{field} must be a string')
+    if not isinstance(options.format.indent.style, str) or not isinstance(options.format.indent.base, int) or options.format.indent.base < 0:
+        raise ValueError('format.indent requires a string style and nonnegative integer base')
+
     _context().extra = options
 
     node = SimpleObj.fromDict(node)
     if _context().preserveBlankLines:
         validateSourceRanges(node)
+    hashbang = extractHashbang(node)
     
     result = generateInternal(node)
+    if hashbang is not None:
+        result = ['#!' + hashbang + '\n', result]
+        result = toSourceNodeWhenNeeded(result)
     
     if not _context().sourceMap:
         pair = SimpleObj({'code': result, 'map': None}) # result.toString()
