@@ -380,18 +380,14 @@ def updateDeeply(target, override):
     return target
 
 def to_base(n, _base):
-    if _base == 10:
-        return n
-    
-    result = 0
-    counter = 0
-    
+    if not isinstance(n, int) or n < 0 or not 2 <= _base <= 36:
+        raise ValueError('base conversion requires a nonnegative integer and base 2..36')
+    digits = '0123456789abcdefghijklmnopqrstuvwxyz'
+    result = ''
     while n:
-        r = n % _base
-        n //= _base
-        result += r * 10**counter
-        counter+=1
-    return str(result)
+        n, remainder = divmod(n, _base)
+        result = digits[remainder] + result
+    return result or '0'
 
 def splice(array, start, deleteCount, *items):
     head = array[:start]
@@ -541,7 +537,10 @@ def escapeAllowedCharacter(code, nextChar):
     if code == 0x09: # \t
         return '\\t'
         
-    _hex = to_base(code, 16).upper()
+    if code > 0xffff:
+        scalar = code - 0x10000
+        return '\\u%04X\\u%04X' % (0xd800 + (scalar >> 10), 0xdc00 + (scalar & 0x3ff))
+    _hex = format(code, 'X')
     if (json or code > 0xff):
         return '\\u' + '0000'[len(_hex):] + _hex
     elif code == 0x0000 and not esutils.code.isDecimalDigit(nextChar if not nextChar is None else 0x00):
@@ -589,48 +588,27 @@ def escapeDirective(string):
     return quote + string + quote
 
 def escapeString(string):
-    result = ''
-    singleQuotes = 0
-    doubleQuotes = 0
-    
-    for i in range(len(string)):
-        code = ord(string[i])
-        if code == 0x27: # "'"
-            singleQuotes += 1
-        elif code == 0x22: # '"'
-            doubleQuotes += 1
-        elif code == 0x2f and json: # '/'
-            result += '\\'
-        elif esutils.code.isLineTerminator(code) or code == 0x5c: # '\'
-            result += escapeDisallowedCharacter(code)
-            continue
-        elif not esutils.code.isIdentifierPartES5(code) and (
-                json and code < 0x20 or # 'SP'
-                not json and not escapeless and (
-                    code < 0x20 or # 'SP'
-                    code > 0x7e # '~'
-                )):
+    single = not (json or quotes == 'double' or
+                  (quotes == 'auto' and string.count('"') < string.count("'")))
+    quote = "'" if single else '"'
+    result = [quote]
+    for i, character in enumerate(string):
+        code = ord(character)
+        if character == quote:
+            result.append('\\' + character)
+        elif code == 0x5c or esutils.code.isLineTerminator(code):
+            result.append(escapeDisallowedCharacter(code))
+        elif code < 0x20 or 0xd800 <= code <= 0xdfff or (
+                not json and not escapeless and code > 0x7e and
+                not esutils.code.isIdentifierPartES5(code)):
             nextChar = ord(string[i + 1]) if i + 1 < len(string) else None
-            result += escapeAllowedCharacter(code, nextChar)
-            continue
-        result += chr(code)
-        
-    single = not (quotes == 'double' or (quotes == 'auto' and doubleQuotes < singleQuotes))
-    quote = '\'' if single else '"'
-    
-    if not (singleQuotes if single else doubleQuotes):
-        return quote + result + quote
-        
-    string = result
-    result = quote
-    
-    for i in range(len(string)):
-        code = ord(string[i])
-        if (code == 0x27 and single) or (code == 0x22 and not single):
-            result += '\\'
-        result += chr(code)
-    
-    return result + quote
+            result.append(escapeAllowedCharacter(code, nextChar))
+        elif json and character == '/':
+            result.append('\\/')
+        else:
+            result.append(character)
+    result.append(quote)
+    return ''.join(result)
 
 """
  * flatten an array to a string, where the array can contain
