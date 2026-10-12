@@ -25,6 +25,7 @@ def parse_many(jobs):
 
 
 SCRIPTS = [
+    'const 变量="我，按钮\U0001f600"; const \U00010400=变量; \U00010400;',
     'var a=1,b=2; let c=3; const d=4;',
     'function f(a=1,...b){"use strictness"; return [a,...b]}',
     'function f(){"use\\u0020strict";"later";return this}',
