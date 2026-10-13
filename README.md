@@ -7,12 +7,16 @@ and requires Python 3.11+. Runtime generation is pure Python with `esutils`;
 Node and Acorn are development test oracles only.
 
 ```sh
-python -m pip install escodegen
-python -m pip install 'escodegen[integration]'  # optional parser/walker
+python -m pip install "escodegen>=2,<3"
+python -m pip install "escodegen[integration]>=2,<3"  # optional parser/walker
 ```
 
-The coordinated 2.0 toolchain is currently unreleased. Use sibling local
-checkouts for development; see [CONTRIBUTING.md](CONTRIBUTING.md).
+The 2.x release requires Python 3.11+ and `esutils` 2.x. Its integration extra
+adds `esprima-fork` 5.x (imported as `esprima`) and `acornwalk` 2.x. For source
+development, use sibling checkouts as described in the
+[contributor instructions](https://github.com/0o120/escodegen-python/blob/master/CONTRIBUTING.md).
+See the [migration notes](https://github.com/0o120/escodegen-python/blob/master/CHANGELOG.md)
+for changes from 1.x.
 
 ```python
 import escodegen
@@ -104,7 +108,8 @@ The final performance pass reduced medium native generation by 39.5% and
 peak allocation by 75.9% from the modernization starting checkpoint. Mapping
 generation retains its gains over the original port; native generation
 remains slower than original in the measured legacy cases. See
-[performance status](PERFORMANCE.md) for exact revisions, workloads and limits.
+[performance status](https://github.com/0o120/escodegen-python/blob/master/PERFORMANCE.md)
+for exact revisions, workloads and limits.
 
 Comments must be attached as `leadingComments`/`trailingComments` or block
 `innerComments`; this package

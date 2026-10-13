@@ -3,8 +3,8 @@
 Use Python 3.11+ and Node 24+ for the ECMAScript 2026 verification corpus.
 Node is required only to develop/test the package, not to generate code.
 
-Install the local coordinated utility dependency before installing this
-package (esutils 2 is not yet on PyPI):
+Install the sibling utility checkout before installing this package to test
+the coordinated source changes without relying on published versions:
 
 ```sh
 python -m venv .venv

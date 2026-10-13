@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0 (unreleased)
+## 2.0.0 (next release)
 
 - Generate compatible native attribute ASTs directly, preserving the public
   snapshot adapter and conservative fallback for custom behavior. Reduce
@@ -28,3 +28,12 @@
 - Preserve hashbangs at byte zero and upstream BSD fixture notices.
 - Require Python 3.11+ and esutils 2.x; add integration extras, modern metadata,
   locked development oracles and Windows/Linux CI.
+- Prepare stable PyPI metadata and absolute documentation links. The optional
+  integration extra requires esprima-fork 5.x and acornwalk 2.x.
+
+Migration from 1.x: use Python 3.11 or newer and upgrade `esutils` to 2.x.
+Install `escodegen[integration]` for the coordinated parser and walker;
+`esprima-fork` provides the `esprima` import. Keep formatting options under
+`format`. Inputs must use documented ESTree/native fields; unsupported nodes,
+conflicting async/await aliases and invalid literal metadata raise `ValueError`.
+Source maps use UTF-16 columns, and source ranges must follow the same units.
