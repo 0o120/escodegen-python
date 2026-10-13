@@ -1,15 +1,17 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.32.4,<2"]
 build-backend = "hatchling.build"
 
 [project]
 name = "escodegen"
-version = "1.0.11"
+dynamic = ["version"]
 authors = [
 	{ name="0x78", email="contact@0x78.com" }
 ]
-requires-python = ">=3.6"
-description = "ECMAScript code generator"
+requires-python = ">=3.11"
+license = "BSD-2-Clause"
+license-files = ["LICENSE"]
+description = "Pure Python ECMAScript 2026 and JSX code generator for ESTree and native ASTs"
 readme = "README.md"
 keywords = [
     "escodegen",
@@ -17,21 +19,46 @@ keywords = [
     "javascript",
     "generator",
     "generate",
-	"ast"
+    "ast",
+    "estree",
+    "jsx"
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
     "Topic :: Software Development :: Code Generators",
     "Topic :: Software Development :: Compilers",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Text Processing :: General",
-    "Programming Language :: Python :: 3.6"
+    "Programming Language :: JavaScript",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15"
 ]
 dependencies = [
-	"esutils"
+	"esutils>=2,<3"
 ]
 
 [project.urls]
 "Homepage" = "https://github.com/0o120/escodegen-python"
+"Source" = "https://github.com/0o120/escodegen-python"
+"Issues" = "https://github.com/0o120/escodegen-python/issues"
+"Documentation" = "https://github.com/0o120/escodegen-python#readme"
+"Changelog" = "https://github.com/0o120/escodegen-python/blob/master/CHANGELOG.md"
+
+[project.optional-dependencies]
+integration = ["esprima-fork>=5,<6", "acornwalk>=2,<3"]
+
+[tool.hatch.version]
+path = "escodegen/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["escodegen"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/escodegen", "/tests", "/tools", "/README.md", "/CHANGELOG.md", "/RELEASING.md", "/CONTRIBUTING.md", "/PERFORMANCE.md", "/requirements.txt", "/requirements-dev.txt", "/pyproject.toml", "/LICENSE"]
+exclude = ["**/node_modules", "**/__pycache__", "**/*.py[cod]", "**/.venv", "**/.dependencies", "**/.env", "**/.env.*", "**/.pytest_cache", "**/.mypy_cache", "**/.ruff_cache", "**/.DS_Store", "**/Thumbs.db"]

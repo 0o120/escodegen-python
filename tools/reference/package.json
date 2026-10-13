@@ -1,0 +1,11 @@
+{
+  "name": "escodegen-python-test-oracles",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Pinned development-only independent JavaScript parsers and source-map consumer",
+  "dependencies": {
+    "acorn": "8.19.0",
+    "acorn-jsx": "5.3.2",
+    "source-map": "0.8.0"
+  }
+}

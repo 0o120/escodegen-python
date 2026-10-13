@@ -1,0 +1,11 @@
+{
+  "compare-esprima2/export-declaration.js": "Export 'foo' is not defined",
+  "compare-esprima2/export-default-declaration.js": "Duplicate export 'default'",
+  "compare-esprima2/exports.js": "Duplicate export 'b'",
+  "compare-esprima2/import-with-default.js": "Identifier 'foo' has already been declared",
+  "compare-esprima2/imports.js": "Identifier 'bar' has already been declared",
+  "compare-fixed-harmony/spread-element.js": "Identifier 'a' has already been declared",
+  "compare-harmony/destructuring-assignment.js": "Identifier 'i' has already been declared",
+  "compare-harmony/one-assignment-property.js": "Assigning to rvalue",
+  "compare-harmony/spread-element.js": "Identifier 'a' has already been declared"
+}
