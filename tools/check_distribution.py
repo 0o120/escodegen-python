@@ -58,6 +58,13 @@ def main():
             subprocess.run([sys.executable, "-I", "-c", script, folder], cwd=folder, check=True)
     with tarfile.open(sources[0]) as archive:
         names = archive.getnames()
+        local_directories = {"__pycache__", "node_modules", ".venv", ".dependencies",
+                             ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+        for name in names:
+            parts = Path(name).parts
+            assert not local_directories.intersection(parts), f"Local development artifact in source archive: {name}"
+            assert not any(part == ".env" or part.startswith(".env.") for part in parts), f"Environment file in source archive: {name}"
+            assert not name.endswith((".pyc", ".pyo", ".DS_Store", "Thumbs.db")), f"Generated file in source archive: {name}"
         prefix = names[0].split("/")[0]
         metadata = email.message_from_bytes(archive.extractfile(f"{prefix}/PKG-INFO").read())
         assert metadata["Version"] == version

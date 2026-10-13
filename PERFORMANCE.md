@@ -68,8 +68,9 @@ custom truthiness/equality, shared graphs, callbacks and concurrency have
 focused regressions.
 
 Reproducible scripts, snapshots, profiles and raw measurements are in the
-session workspace at `implementation-artifacts/performance-round2/generator/`;
-the final matrix is `final.json`. Measurements describe these workloads and
-this machine; interpreter, AST representation and application options affect
-the results. Release status remains unreleased beta pending the final
-installed-package and CI gates.
+the development workspace outside this repository at
+`implementation-artifacts/performance-round2/generator/`; the final matrix is
+`final.json`. They are not included in the public source archive or wheel.
+Measurements describe these workloads and this machine; interpreter, AST
+representation and application options affect the results. Current release
+checks and publishing instructions are documented in [RELEASING.md](RELEASING.md).

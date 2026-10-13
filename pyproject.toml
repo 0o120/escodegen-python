@@ -61,4 +61,4 @@ packages = ["escodegen"]
 
 [tool.hatch.build.targets.sdist]
 include = ["/escodegen", "/tests", "/tools", "/README.md", "/CHANGELOG.md", "/RELEASING.md", "/CONTRIBUTING.md", "/PERFORMANCE.md", "/requirements.txt", "/requirements-dev.txt", "/pyproject.toml", "/LICENSE"]
-exclude = ["/tools/reference/node_modules"]
+exclude = ["**/node_modules", "**/__pycache__", "**/*.py[cod]", "**/.venv", "**/.dependencies", "**/.env", "**/.env.*", "**/.pytest_cache", "**/.mypy_cache", "**/.ruff_cache", "**/.DS_Store", "**/Thumbs.db"]
