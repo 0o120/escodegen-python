@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0 (next release)
+## 2.0.0 — 2026-10-13
 
 - Generate compatible native attribute ASTs directly, preserving the public
   snapshot adapter and conservative fallback for custom behavior. Reduce

@@ -1,6 +1,6 @@
 # Publishing escodegen
 
-The next stable release is **2.0.0**, requiring **Python 3.11+**.
+The initial modern stable release is **2.0.0**, requiring **Python 3.11+**.
 The PyPI distribution is `escodegen`; the import remains `escodegen`.
 
 ## Automatic publishing
@@ -34,12 +34,13 @@ the error. Already-uploaded files must match the newly built SHA256 exactly;
 only missing files are uploaded. A conflicting file requires a new version.
 PyPI lookup errors block publishing rather than pretending a version is absent.
 
-## First coordinated release
+## Coordinated dependency updates
 
-Merge the four modernization branches before relying on `master` integration
-checks; they test the current sibling libraries together. If a check started
-before the other projects were merged, rerun its original push CI run after
-the sibling changes are available. A successful rerun triggers publication.
+Integration CI checks compatible sibling sources together. For coordinated
+changes, make the matching sibling revisions available before relying on the
+full integration result. If a check ran before a required sibling update,
+rerun its original push CI run once that update is available. A successful
+rerun triggers publication for a new declared version.
 
 Publish `esutils 2.0.0` before `escodegen 2.0.0`, which requires `esutils>=2,<3`.
 Parser and walker do not need a sibling runtime release. If the generator's
@@ -66,8 +67,7 @@ python tools/pypi_release.py plan --project escodegen
 ```
 
 The preflight/staging helper only reads PyPI metadata and prepares local files;
-it cannot upload anything. CI never executes the supplied external YouTube
-bundle and does not include it in the packages.
+it cannot upload anything.
 
 See [PyPA's publishing action](https://github.com/pypa/gh-action-pypi-publish)
 and [GitHub workflow_run](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
