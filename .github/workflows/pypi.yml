@@ -1,0 +1,95 @@
+name: Publish to PyPI
+on:
+  workflow_run:
+    workflows: ["Tests and package builds"]
+    types: [completed]
+    branches: [master]
+permissions:
+  contents: read
+concurrency:
+  group: pypi-${{ github.repository }}
+  queue: max
+  cancel-in-progress: false
+jobs:
+  build:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      publish: ${{ steps.stage.outputs.publish }}
+      version: ${{ steps.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - name: Install pinned build and validation tools
+        run: python -m pip install -r requirements-dev.txt
+      - name: Check declared version against PyPI
+        id: plan
+        run: python tools/pypi_release.py plan --project escodegen
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: 0o120/esutils-python
+          ref: master
+          path: .dependencies/esutils
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: 0o120/esprima-python
+          ref: master
+          path: .dependencies/esprima
+          persist-credentials: false
+      - name: Install libraries for extracted-wheel README checks
+        run: python -m pip install .dependencies/esutils .dependencies/esprima
+      - name: Prepare distributions for a new version
+        if: steps.plan.outputs.publish == 'true'
+        id: stage
+        env:
+          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          python -m build --no-isolation --outdir "$RUNNER_TEMP/dist"
+          python -m twine check --strict "$RUNNER_TEMP"/dist/*
+          python tools/check_distribution.py --dist "$RUNNER_TEMP/dist"
+          python tools/pypi_release.py stage --project escodegen --version "$RELEASE_VERSION" --dist "$RUNNER_TEMP/dist" --output "$RUNNER_TEMP/dist-upload"
+      - name: Store verified upload files
+        if: steps.stage.outputs.publish == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pypi-${{ github.event.workflow_run.head_sha }}
+          path: ${{ runner.temp }}/dist-upload/*
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+  publish:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pypi-${{ github.event.workflow_run.head_sha }}
+          path: dist-upload
+      - name: Check publishing credential
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$PYPI_API_TOKEN" ]; then
+            echo "Configure the PYPI_API_TOKEN Actions secret for this repository." >&2
+            exit 1
+          fi
+      - name: Publish escodegen to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          packages-dir: dist-upload/
+          attestations: false
+          skip-existing: false

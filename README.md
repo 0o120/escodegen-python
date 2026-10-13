@@ -155,3 +155,5 @@ are regression-tested. General ECMAScript escaping supersedes the proposed
 punctuation exception and Python repr replacements while preserving quote,
 JSON and UTF-16 values. No PR was merged/closed automatically. Upstream BSD
 copyrights and fixture notices remain preserved.
+
+Release automation and version bumps are documented in [RELEASING.md](https://github.com/0o120/escodegen-python/blob/master/RELEASING.md).

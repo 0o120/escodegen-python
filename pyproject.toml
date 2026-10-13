@@ -60,5 +60,5 @@ path = "escodegen/__init__.py"
 packages = ["escodegen"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/escodegen", "/tests", "/tools", "/README.md", "/CHANGELOG.md", "/CONTRIBUTING.md", "/PERFORMANCE.md", "/requirements.txt", "/requirements-dev.txt", "/pyproject.toml", "/LICENSE"]
+include = ["/escodegen", "/tests", "/tools", "/README.md", "/CHANGELOG.md", "/RELEASING.md", "/CONTRIBUTING.md", "/PERFORMANCE.md", "/requirements.txt", "/requirements-dev.txt", "/pyproject.toml", "/LICENSE"]
 exclude = ["/tools/reference/node_modules"]
