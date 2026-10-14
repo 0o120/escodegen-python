@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Preserve default-exported function/class expressions, including expression
+  chains, with required parentheses. Avoid changing module bindings, hoisting
+  or initialization by accidentally emitting a declaration. Cover native and
+  mapping ASTs, comments, compact output and source maps.
+
 - Reduce fragment-flattening overhead and fix JSX source maps that contained
   AST objects instead of string symbol names, preventing JSON serialization.
 

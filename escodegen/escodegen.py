@@ -1664,7 +1664,12 @@ class CodeGeneratorStatement:
         if isStatement(stmt.declaration):
             result = join(result, self.generateStatement(stmt.declaration, bodyFlags))
         else:
-            result = join(result, self.generateExpression(stmt.declaration, Precedence.Assignment, E_TTT) + self.semicolon(flags))
+            fragment = self.generateExpression(stmt.declaration, Precedence.Assignment, E_TTT)
+            # An expression beginning with function/class must not become a
+            # default-export declaration: that changes bindings and hoisting.
+            if self.firstExpression(stmt.declaration).type in (Syntax.FunctionExpression, Syntax.ClassExpression):
+                fragment = ['(', fragment, ')']
+            result = join(result, [fragment, self.semicolon(flags)])
 
         return result
         
