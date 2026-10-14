@@ -77,7 +77,8 @@ _NODE_CHILD_FIELDS = {
     'CallExpression': ('callee',), 'NewExpression': ('callee',),
     'ChainExpression': ('expression',), 'ImportExpression': ('source',),
     'ImportDeclaration': ('source',), 'ExportAllDeclaration': ('source',),
-    'PropertyDefinition': ('key',), 'Property': ('key', 'value'),
+    'PropertyDefinition': ('key',), 'AccessorProperty': ('key',), 'Decorator': ('expression',),
+    'Property': ('key', 'value'),
     'MethodDefinition': ('key', 'value'), 'VariableDeclarator': ('id',),
     'IfStatement': ('test', 'consequent'), 'WhileStatement': ('test', 'body'),
     'WithStatement': ('object', 'body'), 'DoWhileStatement': ('test', 'body'),
@@ -104,6 +105,16 @@ def validateNodeFields(node, context=None):
             raise ValueError(f'{nodeType}.{field} must contain an ESTree node')
     if nodeType == 'Literal' and 'value' not in vars(node) and node.regex is None and node.bigint is None:
         raise ValueError('Literal.value is required; use an explicit None for null')
+    decorators = getattr(node, 'decorators')
+    if decorators is not None:
+        if not isinstance(decorators, list):
+            raise ValueError(f'{nodeType}.decorators must be a list')
+        if decorators and nodeType not in ('ClassDeclaration', 'ClassExpression', 'MethodDefinition',
+                                           'PropertyDefinition', 'AccessorProperty'):
+            raise ValueError(f'Decorators are unsupported on {nodeType}')
+        for decorator in decorators:
+            if type(decorator) not in nodeTypes or decorator.type != 'Decorator':
+                raise ValueError(f'{nodeType}.decorators must contain Decorator nodes')
 
 def generate(node, options=None):
     """Generate without mutating input ASTs or sharing formatting state."""
@@ -117,6 +128,7 @@ def generate(node, options=None):
         _generation_context.reset(token)
 
 class Syntax:
+    AccessorProperty = "AccessorProperty"
     AssignmentExpression = "AssignmentExpression"
     AssignmentPattern = "AssignmentPattern"
     ArrayExpression = "ArrayExpression"
@@ -137,11 +149,14 @@ class Syntax:
     ConditionalExpression = "ConditionalExpression"
     ContinueStatement = "ContinueStatement"
     DebuggerStatement = "DebuggerStatement"
+    Decorator = "Decorator"
     DirectiveStatement = "DirectiveStatement"
     DoWhileStatement = "DoWhileStatement"
     EmptyStatement = "EmptyStatement"
     ExportAllDeclaration = "ExportAllDeclaration"
     ExportDefaultDeclaration = "ExportDefaultDeclaration"
+    ExportDefaultSpecifier = "ExportDefaultSpecifier"
+    ExportNamespaceSpecifier = "ExportNamespaceSpecifier"
     ExportNamedDeclaration = "ExportNamedDeclaration"
     ExportSpecifier = "ExportSpecifier"
     ExpressionStatement = "ExpressionStatement"
@@ -268,6 +283,7 @@ F_FUNC_BODY = 1 << 3
 F_DIRECTIVE_CTX = 1 << 4
 F_SEMICOLON_OPT = 1 << 5
 F_FOUND_COALESCE = 1 << 6
+F_USING_FOR_OF = 1 << 7
 
 #Expression flag sets
 #NOTE: Flag order:
@@ -596,7 +612,9 @@ def getDefaultOptions():
             'comprehensionExpressionStartsWithAssignment': False,
             'starlessGenerator': False
         }),
-        'extensions': SimpleObj({'resourceManagement': False}),
+        'extensions': SimpleObj({'resourceManagement': False, 'decorators': False,
+                                  'deferredImportEvaluation': False, 'sourcePhaseImports': False,
+                                  'exportDefaultFrom': False}),
         'sourceMap': None,
         'sourceMapRoot': None,
         'sourceMapWithCode': False,
@@ -1578,7 +1596,7 @@ class CodeGeneratorStatement:
         return result
     
     def ClassDeclaration(self, stmt, flags):
-        result  = ['class']
+        result = [self.generateDecorators(stmt), 'class']
         if stmt.id:
             result = join(result, self.generateExpression(stmt.id, Precedence.Sequence, E_TTT))
         
@@ -1659,6 +1677,38 @@ class CodeGeneratorStatement:
         # export Declaration[Default]
         if stmt.declaration:
             return join(result, self.generateStatement(stmt.declaration, bodyFlags))
+
+        special = [specifier for specifier in stmt.specifiers or []
+                   if specifier.type in (Syntax.ExportDefaultSpecifier, Syntax.ExportNamespaceSpecifier)]
+        if special:
+            if stmt.source is None:
+                raise ValueError('Default/namespace re-export specifiers require a source')
+            defaults = [specifier for specifier in special if specifier.type == Syntax.ExportDefaultSpecifier]
+            namespaces = [specifier for specifier in special if specifier.type == Syntax.ExportNamespaceSpecifier]
+            if (len(defaults) > 1 or len(namespaces) > 1 or
+                    (defaults and stmt.specifiers[0] is not defaults[0]) or
+                    (namespaces and len(stmt.specifiers) != len(defaults) + 1)):
+                raise ValueError('Default re-export must be first and namespace re-exports cannot mix with named specifiers')
+            cursor = 0
+            if defaults:
+                result = join(result, self.generateExpression(defaults[0], Precedence.Sequence, E_TTT))
+                cursor = 1
+            if namespaces:
+                if cursor:
+                    result.append(',' + _context().space)
+                result = join(result, self.generateExpression(namespaces[0], Precedence.Sequence, E_TTT))
+            elif cursor < len(stmt.specifiers):
+                result.append(',' + _context().space + '{' + _context().space)
+                for index, specifier in enumerate(stmt.specifiers[cursor:]):
+                    if specifier.type != Syntax.ExportSpecifier:
+                        raise ValueError('Unsupported named re-export specifier: ' + specifier.type)
+                    if index:
+                        result.append(',' + _context().space)
+                    result.append(self.generateExpression(specifier, Precedence.Sequence, E_TTT))
+                result.append(_context().space + '}')
+            return join(result, ['from' + _context().space,
+                                 self.generateExpression(stmt.source, Precedence.Sequence, E_TTT),
+                                 self.generateImportAttributes(stmt), self.semicolon(flags)])
         
         # export ExportClause[NoReference] FromClause 
         # export ExportClause 
@@ -1792,6 +1842,11 @@ class CodeGeneratorStatement:
         #     - import ImportClause FromClause 
         #     - import ModuleSpecifier 
         that = self
+        phase = self.generateImportPhase(stmt)
+        if phase:
+            expected = Syntax.ImportNamespaceSpecifier if phase == 'defer' else Syntax.ImportDefaultSpecifier
+            if len(stmt.specifiers) != 1 or stmt.specifiers[0].type != expected:
+                raise ValueError(f'ImportDeclaration.phase {phase} requires exactly one {expected}')
 
         # If no ImportClause is present,
         # this should be `import ModuleSpecifier` so skip `from`
@@ -1808,9 +1863,7 @@ class CodeGeneratorStatement:
             ]
             
         # import ImportClause FromClause 
-        result = [
-            'import'
-        ]
+        result = ['import' + (noEmptySpace() + phase if phase else '')]
         cursor = 0
         
         # ImportedBinding
@@ -1872,6 +1925,10 @@ class CodeGeneratorStatement:
         
     def VariableDeclarator(self, stmt, flags):
         itemFlags = E_TTT if (flags & F_ALLOW_IN) else E_FTT
+        if flags & F_USING_FOR_OF and stmt.id.type == Syntax.Identifier and stmt.id.name == 'of':
+            # `for (using of of xs)` is ambiguous. Escaping the binding's
+            # first character retains its name and the valid declaration.
+            return toSourceNodeWhenNeeded('\\u006ff', stmt.id)
         if stmt.init:
             return [
                 self.generateExpression(stmt.id, Precedence.Assignment, itemFlags),
@@ -1884,11 +1941,7 @@ class CodeGeneratorStatement:
         return self.generatePattern(stmt.id, Precedence.Assignment, itemFlags)
         
     def VariableDeclaration(self, stmt, flags):
-        if stmt.kind in ('using', 'await using'):
-            if not _context().extra.extensions.resourceManagement:
-                raise ValueError('Resource declarations require extensions.resourceManagement')
-        elif stmt.kind not in ('var', 'let', 'const'):
-            raise ValueError('Unsupported VariableDeclaration.kind: ' + str(stmt.kind))
+        self.validateVariableDeclaration(stmt)
         # VariableDeclarator is typed as Statement,
         # but joined with comma (not LineTerminator).
         # So if comment is attached to target node, we should specialize.
@@ -2198,6 +2251,22 @@ class CodeGeneratorStatement:
 # Expressions.
 
 class CodeGeneratorExpression:
+    def ExportDefaultSpecifier(self, expr, precedence, flags):
+        if not _context().extra.extensions.exportDefaultFrom:
+            raise ValueError('Default re-export specifiers require extensions.exportDefaultFrom')
+        exported = expr.exported if expr.exported is not None else expr.local
+        if exported is None or exported.type != Syntax.Identifier:
+            raise ValueError('ExportDefaultSpecifier.exported must contain an Identifier')
+        if expr.exported is not None and expr.local is not None and expr.exported.name != expr.local.name:
+            raise ValueError('Conflicting ExportDefaultSpecifier.exported/local fields')
+        return self.generateExpression(exported, Precedence.Primary, E_TTT)
+
+    def ExportNamespaceSpecifier(self, expr, precedence, flags):
+        if expr.exported is None or expr.exported.type not in (Syntax.Identifier, Syntax.Literal):
+            raise ValueError('ExportNamespaceSpecifier.exported must contain an exported name')
+        return ['*', noEmptySpace(), 'as', noEmptySpace(),
+                self.generateExpression(expr.exported, Precedence.Primary, E_TTT)]
+
 
     def SequenceExpression(self, expr, precedence, flags):
         if Precedence.Sequence < precedence:
@@ -2495,7 +2564,7 @@ class CodeGeneratorExpression:
         return '...' + self.generatePattern(expr.argument, precedence, flags)
     
     def ClassExpression(self, expr, precedence, flags):
-        result = ['class']
+        result = [self.generateDecorators(expr), 'class']
         if expr.id:
             result = join(result, self.generateExpression(expr.id, Precedence.Sequence, E_TTT))
 
@@ -2505,7 +2574,8 @@ class CodeGeneratorExpression:
 
         result.append(_context().space)
         result.append(self.generateStatement(expr.body, S_TFFT))
-        return result
+        # A decorated class still has the precedence of a class expression.
+        return parenthesize(result, Precedence.Primary, precedence)
     
     def MethodDefinition(self, expr, precedence, flags):
 
@@ -2526,13 +2596,19 @@ class CodeGeneratorExpression:
                 self.generateFunctionBody(expr.value)
             ]
 
-        return join(result, fragment)
+        return [self.generateDecorators(expr), join(result, fragment)]
 
     def PrivateIdentifier(self, expr, precedence, flags):
         return generateIdentifier(expr)
 
     def PropertyDefinition(self, expr, precedence, flags):
-        result = ['static', noEmptySpace()] if expr.static else []
+        result = [self.generateDecorators(expr)]
+        if expr.static:
+            result.extend(['static', noEmptySpace()])
+        if expr.type == Syntax.AccessorProperty:
+            if not _context().extra.extensions.decorators:
+                raise ValueError('Auto-accessors require extensions.decorators')
+            result.extend(['accessor', noEmptySpace()])
         result.append(self.generatePropertyKey(expr.key, expr.computed))
         if expr.value is not None:
             result.extend([_context().space, '=', _context().space,
@@ -2540,6 +2616,15 @@ class CodeGeneratorExpression:
         # Always terminate fields: newlines can disappear in compact output.
         result.append(';')
         return result
+
+    AccessorProperty = PropertyDefinition
+
+    def Decorator(self, expr, precedence, flags):
+        if not _context().extra.extensions.decorators:
+            raise ValueError('Decorators require extensions.decorators')
+        # Parenthesized decorators accept every expression and prevent a
+        # following decorator/member from extending a call or property access.
+        return ['@(', self.generateExpression(expr.expression, Precedence.Sequence, E_TTT), ')']
 
     def StaticBlock(self, expr, precedence, flags):
         block = SimpleObj({'type': Syntax.BlockStatement, 'body': expr.body,
@@ -2860,8 +2945,9 @@ class CodeGeneratorExpression:
         return self.Literal(expr, precedence, flags)
     
     def ImportExpression(self, expr, precedence, flags):
+        phase = self.generateImportPhase(expr)
         return parenthesize([
-            'import(',
+            'import' + ('.' + phase if phase else '') + '(',
             (expr.source and self.generateExpression(expr.source, Precedence.Assignment, E_TTT) or ''),
             [',' + _context().space, self.generateExpression(expr.options, Precedence.Assignment, E_TTT)] if expr.options is not None else '',
             ')'
@@ -3040,6 +3126,47 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
         result.extend([_context().space, '}'])
         return result
 
+    def generateImportPhase(self, node):
+        phase = node.phase
+        if phase is None:
+            return ''
+        option = {'defer': 'deferredImportEvaluation', 'source': 'sourcePhaseImports'}.get(phase)
+        if option is None:
+            raise ValueError(f'Unsupported {node.type}.phase: {phase}')
+        if not getattr(_context().extra.extensions, option):
+            raise ValueError(f'Import phase {phase} requires extensions.{option}')
+        return phase
+
+    def generateDecorators(self, node):
+        result = []
+        for decorator in node.decorators or []:
+            result.extend([self.generateExpression(decorator, Precedence.Sequence, E_TTT),
+                           _context().newline or noEmptySpace(), _context().base if _context().newline else ''])
+        return result
+
+    def validateVariableDeclaration(self, node, iteration=None):
+        validateNodeFields(node)
+        resource = node.kind in ('using', 'await using')
+        if resource:
+            if not _context().extra.extensions.resourceManagement:
+                raise ValueError('Resource declarations require extensions.resourceManagement')
+            if iteration == 'in':
+                raise ValueError('Resource declarations cannot be used in for-in loops')
+        elif node.kind not in ('var', 'let', 'const'):
+            raise ValueError('Unsupported VariableDeclaration.kind: ' + str(node.kind))
+        if iteration is not None and len(node.declarations) != 1:
+            raise ValueError('Iteration declarations require exactly one declarator')
+        for declaration in node.declarations:
+            validateNodeFields(declaration)
+            if declaration.type != Syntax.VariableDeclarator:
+                raise ValueError('VariableDeclaration.declarations must contain VariableDeclarator nodes')
+            if resource and declaration.id.type != Syntax.Identifier:
+                raise ValueError('Resource declarations require identifier bindings')
+            if iteration == 'of' and declaration.init is not None:
+                raise ValueError('For-of declarations cannot have an initializer')
+            if resource and iteration is None and declaration.init is None:
+                raise ValueError('Resource declarations require an initializer')
+
     def restrictedArgument(self, node, precedence, flags):
         result = self.generateExpression(node, precedence, flags)
         if hasLineTerminator(toSourceNodeWhenNeeded(result, toString=True)):
@@ -3151,15 +3278,19 @@ class CodeGenerator(CodeGeneratorStatement, CodeGeneratorExpression):
     
     def generateIterationForStatement(self, operator, stmt, flags):
         that = self
+        if stmt.allowAwait and operator != 'of':
+            raise ValueError('Only for-of loops can be asynchronous')
         result = ['for' + (noEmptySpace() + 'await' if stmt.allowAwait else '') + _context().space + '('] # TODO: stmt.await => stmt.allowAwait ?
         
         def fn(*args, **kwargs):
             nonlocal result
             if stmt.left.type == Syntax.VariableDeclaration:
+                that.validateVariableDeclaration(stmt.left, operator)
                 def fn2(*args, **kwargs):
                     nonlocal result
                     result.append(stmt.left.kind + noEmptySpace())
-                    result.append(that.generateStatement(stmt.left.declarations[0], S_FFFF))
+                    bindingFlags = F_USING_FOR_OF if operator == 'of' and stmt.left.kind == 'using' else S_FFFF
+                    result.append(that.generateStatement(stmt.left.declarations[0], bindingFlags))
                 withIndent(fn2)
             else:
                 fragment = that.generateExpression(stmt.left, Precedence.Call, E_TTT)

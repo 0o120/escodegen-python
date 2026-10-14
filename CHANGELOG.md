@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add explicit extension generation for decorators, auto-accessors, source and
+  deferred module phases, and default reexports, preserving native/mapping ASTs.
+- Correct resource loop validation and escape ambiguous `using of` bindings
+  without mutating caller nodes. Preserve async iteration/disposal independently.
+- Add pinned Babel proposal comparisons and coordinated parser/walker roundtrips.
+
 ## 2.0.0 — 2026-10-13
 
 - Generate compatible native attribute ASTs directly, preserving the public

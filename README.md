@@ -46,11 +46,32 @@ namespace exports, quoted module names, import/export attributes, dynamic
 import options, top-level await and current regex descriptors. JSX has
 element, fragment, namespace, attribute and spread-child emitters. A parser
 must first validate grammar/early errors in its script/module/extension
-context. TypeScript, Flow, decorators and unknown AST nodes are unsupported.
+context. TypeScript, Flow and unknown AST nodes are unsupported.
 Legacy Mozilla comprehensions/guards are compatibility extensions rather
 than part of the published ECMAScript target.
 Resource declarations (`using`/`await using`) require
 `extensions.resourceManagement=True`; they are outside the published target.
+
+Other opt-in syntax uses the generator `extensions` mapping:
+`decorators`, `deferredImportEvaluation`, `sourcePhaseImports`, and
+`exportDefaultFrom`. Decorators use the November 2023 grammar, including
+`AccessorProperty` nodes. Import `phase` values and `await using` disposal kinds
+are preserved; they are independent of asynchronous for-of iteration.
+Ordinary imports and core output are unchanged when extensions are disabled.
+
+```python
+import esprima
+import escodegen
+
+tree = esprima.parseModule('await using resource = acquire();',
+                          {'explicitResourceManagement': True})
+code = escodegen.generate(tree, {'extensions': {'resourceManagement': True}})
+```
+
+Enable matching parser options when reparsing extension output. The generator
+does not execute or transpile disposal, decorator or module-loading semantics.
+Invalid resource loop heads, phase specifier shapes and missing proposal gates
+raise `ValueError` instead of dropping fields or emitting invalid core syntax.
 
 Number literals apply JavaScript binary64 rounding to Python/JSON integers.
 Integers beyond the finite domain and NaN raise `ValueError`; infinity emits
