@@ -956,10 +956,8 @@ def escapeString(string):
  * either strings or nested arrays
 """
 def flattenToString(arr):
-    result = []
-    for i in arr:
-        result.append((flattenToString(i) if type(i) == list else i) or '')
-    return ''.join(result)
+    return ''.join([(flattenToString(item) if type(item) == list else item) or ''
+                    for item in arr])
 """
  * convert generated to a SourceNode when source maps are enabled.
 """
@@ -979,12 +977,15 @@ def toSourceNodeWhenNeeded(generated, node=None, toString=False):
         else:
             node = SimpleObj()
             
+    # Structural JSX nodes carry a name node, while source-map names are strings.
+    name = node.name
+    name = name if isinstance(name, str) and name else None
     if node.loc is None:
-        sn = SourceNode(None, None, None, generated, node.name or None)
+        sn = SourceNode(None, None, None, generated, name)
     else:
         if node.loc.start is None:
             raise ValueError('source-map loc must contain a start position')
-        sn = SourceNode(node.loc.start.line, node.loc.start.column, (node.loc.source or 'source.js') if _context().sourceMap == True else _context().sourceMap, generated, node.name or None)
+        sn = SourceNode(node.loc.start.line, node.loc.start.column, (node.loc.source or 'source.js') if _context().sourceMap == True else _context().sourceMap, generated, name)
     return sn.toString() if toString else sn
 
 def noEmptySpace():

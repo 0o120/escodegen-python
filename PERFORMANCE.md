@@ -1,5 +1,46 @@
 # Performance status
 
+## Post-gap performance audit — October 2026
+
+Fragment flattening uses a list comprehension while retaining existing
+recursive/list and falsey-fragment behavior. Compatibility checks, live node
+validation, cycle detection, source-map handling and per-call state remain active.
+
+| YouTube generation | Before, seconds | After, seconds | Less time |
+| --- | ---: | ---: | ---: |
+| Native AST | 13.864 | 13.594 | 2.0% |
+| Mapping AST | 23.931 | 23.149 | 3.3% |
+
+Medium native/mapping generation improves 1.5%/5.0% in the component matrix.
+Several small comments/source-map cases take up to 3.8% more time, so this is
+not a blanket throughput improvement. All generated code signatures match.
+
+The combined JSX/source-map workload exposed an existing correctness bug:
+structural JSX nodes supplied AST objects as source-map names. Names are now
+strings or absent, preserving the individual JSX identifier mappings and making
+`map.toString()` valid JSON. Native and mapping regression cases cover the fix.
+Its changed source-map signature is explicit in the comparison evidence.
+
+All 109 generator methods and 47 subtests pass on CPython 3.11-3.15, together
+with the coordinated 9,828 generation checks and 4,914 Babel round trips.
+The full YouTube output is byte-identical across before/after trials.
+
+Measurements use CPython 3.12.0 on Windows, default garbage collection and
+sequential alternating before/after processes. Large-file figures are medians
+of three fresh processes per version. Component figures use three fresh
+processes per version, seven warmed calls per process and the median of process
+medians. All raw samples, including outliers and small regressions, are retained.
+Imports, input reading and correctness comparisons are outside timing windows.
+
+Reproduction scripts, exact Python source hashes, profiles, logs, environments,
+and distributions are outside the repositories in
+`C:/Users/Ryzen/Benchmarks/toolchain-performance-2026-10-13/`.
+The report covers first-call/allocation costs, compatibility fallbacks and
+Python 3.11/3.15 boundary timings as well as the main comparisons. These are
+workload-specific results, not a universal speed guarantee.
+
+## Earlier performance work
+
 The second performance pass was measured on clean source commit
 `d3aa6866e4fc988c729e0c0dc5d551e8ad47b4da` (source SHA256
 `fc06dde6910c15042bfbd0024c4faf089d6a8f43849dccb0c19726ed85b006f9`).

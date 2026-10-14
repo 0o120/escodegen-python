@@ -63,9 +63,10 @@ Ordinary imports and core output are unchanged when extensions are disabled.
 import esprima
 import escodegen
 
-tree = esprima.parseModule('await using resource = acquire();',
-                          {'explicitResourceManagement': True})
-code = escodegen.generate(tree, {'extensions': {'resourceManagement': True}})
+resource_tree = esprima.parseModule('await using resource = acquire();',
+                                   {'explicitResourceManagement': True})
+resource_code = escodegen.generate(resource_tree,
+                                  {'extensions': {'resourceManagement': True}})
 ```
 
 Enable matching parser options when reparsing extension output. The generator
@@ -125,7 +126,7 @@ and leave inputs unchanged. Public `SimpleObj.fromDict` always copies native
 values. Identifier validation and adapter type information are cached only
 within each call.
 
-The final performance pass reduced medium native generation by 39.5% and
+The earlier modernization performance pass reduced medium native generation by 39.5% and
 peak allocation by 75.9% from the modernization starting checkpoint. Mapping
 generation retains its gains over the original port; native generation
 remains slower than original in the measured legacy cases. See

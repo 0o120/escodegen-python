@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reduce fragment-flattening overhead and fix JSX source maps that contained
+  AST objects instead of string symbol names, preventing JSON serialization.
+
 - Add explicit extension generation for decorators, auto-accessors, source and
   deferred module phases, and default reexports, preserving native/mapping ASTs.
 - Correct resource loop validation and escape ambiguous `using of` bindings

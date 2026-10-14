@@ -19,6 +19,25 @@ def at(node, line, column, source='input.js'):
 
 
 class SourceMapTests(unittest.TestCase):
+    def test_jsx_structural_names_remain_json_serializable(self):
+        from escodegen.escodegen import SimpleObj
+        name = at({'type': 'JSXIdentifier', 'name': 'Widget'}, 1, 1)
+        attribute = at({'type': 'JSXAttribute',
+                        'name': at({'type': 'JSXIdentifier', 'name': 'title'}, 1, 8),
+                        'value': at({'type': 'Literal', 'value': 'hello'}, 1, 14)}, 1, 8)
+        opening = at({'type': 'JSXOpeningElement', 'name': name, 'selfClosing': True,
+                      'attributes': [attribute]}, 1, 0)
+        tree = at({'type': 'JSXElement', 'openingElement': opening,
+                   'closingElement': None, 'children': []}, 1, 0)
+        for node in (tree, SimpleObj.fromDict(tree)):
+            with self.subTest(representation=type(node).__name__):
+                result = generate(node, {'sourceMap': 'input.js', 'sourceMapWithCode': True})
+                mapping = result.map.toJSON()
+                self.assertEqual(json.loads(result.map.toString()), mapping)
+                self.assertTrue(all(isinstance(name, str) for name in mapping['names']))
+                self.assertIn('Widget', mapping['names'])
+                self.assertIn('title', mapping['names'])
+
     def test_mapping_metadata_and_empty_source_content(self):
         result = generate(at({'type': 'Literal', 'value': 1}, 2, 7), {
             'sourceMap': 'input.js', 'sourceMapWithCode': True, 'sourceContent': '',
